@@ -1,0 +1,20 @@
+[project]
+title = "HTS Data Analysis App" # Changed title
+version = "0.1.0"
+port = 8501
+slug = "{project_slug}"
+entrypoint = "hello.py"
+
+[branding]
+name = "HTS Data Analysis App" # Changed name to match title for consistency
+logo = "images/logo.png"
+favicon = "images/favicon.ico" # Changed favicon path
+primaryColor = "#F89619"
+
+[data.my_dataset]
+type = "csv"
+path = "data/hts_2025_revision_12_csv.csv"
+
+[logging]
+level = "INFO"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
