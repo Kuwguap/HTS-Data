@@ -14,9 +14,9 @@ import { Switch } from "@/components/ui/Switch";
 import { useToast } from "@/components/ui/Toast";
 import { useStandalone } from "@/hooks/useStandalone";
 import { ApiClientError, api, errorMessage } from "@/lib/api-client";
-import type { ApiErrorBody } from "@/lib/api";
 import type { PublicProfile } from "@/lib/auth/session";
 import { APP_NAME } from "@/lib/constants";
+import { PIN_RE } from "@/lib/validation/common";
 import { LogoutButton } from "./LogoutButton";
 
 export type ProfileSettingsProps = {
@@ -30,37 +30,8 @@ export type ProfileSettingsProps = {
 type MeResponse = { profile: PublicProfile; home: string };
 type PushTestResponse = { sent: boolean; delivered: number; devices: number; pruned: number; status: string | null };
 
-const PIN_RE = /^\d{4,6}$/;
-
 const ROLE_LABEL: Record<PublicProfile["role"], string> = { student: "Student", driver: "Driver", admin: "Admin" };
 const ROLE_TONE: Record<PublicProfile["role"], "blue" | "teal" | "purple"> = { student: "blue", driver: "teal", admin: "purple" };
-
-/**
- * POST /api/auth/pin without the shared `api` helper: a wrong current PIN comes
- * back as 401, which the helper treats as "session gone" and bounces to /login.
- */
-async function changePin(body: { current_pin: string; new_pin: string }): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch("/api/auth/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-  } catch {
-    throw new ApiClientError(0, "INTERNAL", "No connection. Check your internet and try again.");
-  }
-  if (res.ok) return;
-  let err: ApiErrorBody["error"] | undefined;
-  try {
-    err = ((await res.json()) as ApiErrorBody).error;
-  } catch {
-    err = undefined;
-  }
-  throw new ApiClientError(res.status, err?.code ?? "INTERNAL", err?.message ?? "Something went wrong. Try again.", err?.details);
-}
 
 /**
  * The "Me" screen body: profile, reminders, app, security, log out. Shared by
@@ -191,12 +162,15 @@ export function ProfileSettings({ profile: initial, appVersion, enquiryPhone }: 
     if (Object.keys(errs).length > 0) return;
     setPinBusy(true);
     try {
-      await changePin({ current_pin: currentPin, new_pin: newPin });
+      // A wrong current PIN is 401 INVALID_CREDENTIALS (handled inline below); only
+      // 401 UNAUTHENTICATED (session gone) makes the helper bounce to /login?next=….
+      await api.post<{ ok: true }>("/api/auth/pin", { current_pin: currentPin, new_pin: newPin });
       setPinOpen(false);
       toast("✅ PIN changed", { tone: "green" });
     } catch (err) {
       if (err instanceof ApiClientError) {
         if (err.code === "INVALID_CREDENTIALS") setPinErrors({ current_pin: err.message });
+        else if (err.code === "UNAUTHENTICATED") return; // the api helper is already navigating to /login
         else if (err.code === "VALIDATION") {
           setPinErrors({ current_pin: err.fieldError("current_pin"), new_pin: err.fieldError("new_pin") ?? err.message });
         } else toast(`⚠️ ${err.message}`, { tone: "red" });

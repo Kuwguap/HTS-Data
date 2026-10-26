@@ -22,10 +22,13 @@ import { ApiClientError, api } from "@/lib/api-client";
 import type { PublicProfile } from "@/lib/auth/session";
 import { APP_NAME, HOME_BY_ROLE } from "@/lib/constants";
 import type { Settings } from "@/lib/db.types";
+import { safeNextPath } from "@/lib/validation/common";
 
 export type WelcomeFlowProps = {
   profile: PublicProfile;
   settings: Pick<Settings, "hostel_name" | "campus_name" | "enquiry_phone">;
+  /** Where /login or /register wanted to send them (re-validated here; unsafe values are dropped). */
+  next?: string;
 };
 
 type Step = 1 | 2 | 3;
@@ -35,8 +38,9 @@ function firstName(fullName: string): string {
   return fullName.trim().split(/\s+/)[0] ?? fullName;
 }
 
-export function WelcomeFlow({ profile, settings }: WelcomeFlowProps) {
+export function WelcomeFlow({ profile, settings, next: rawNext }: WelcomeFlowProps) {
   const router = useRouter();
+  const next = safeNextPath(rawNext, "") || undefined;
   const { toast } = useToast();
   const env = useStandalone();
   const push = usePushSubscription();
@@ -65,7 +69,7 @@ export function WelcomeFlow({ profile, settings }: WelcomeFlowProps) {
         onboarded: true,
       });
       toast("🎉 You're all set", { tone: "green" });
-      router.replace(res.home || HOME_BY_ROLE[profile.role]);
+      router.replace(next ?? safeNextPath(res.home, HOME_BY_ROLE[profile.role]));
     } catch (err) {
       if (err instanceof ApiClientError && err.code === "VALIDATION") {
         setFieldErrors({ room: err.fieldError("room"), phone: err.fieldError("phone") });

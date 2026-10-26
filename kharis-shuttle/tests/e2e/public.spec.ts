@@ -5,12 +5,7 @@ import { expect, test } from "@playwright/test";
  * public pages render with defaults, guarded pages redirect, APIs reject
  * anonymous callers, and the PWA plumbing (manifest, service worker) is served
  * correctly. The config runs every test under "desktop" and "iphone".
- *
- * `next dev` does a full reload whenever a server file changes on disk, which
- * can land between an action and its assertion; retries absorb that.
  */
-
-test.describe.configure({ retries: 2 });
 
 test.describe("public pages", () => {
   test("landing shows the hostel name and the app button", async ({ page }) => {
@@ -29,6 +24,19 @@ test.describe("public pages", () => {
     await expect(page.getByLabel("PIN", { exact: true })).toHaveAttribute("inputmode", "numeric");
     await expect(page.getByRole("button", { name: /log in/i })).toBeVisible();
     await expect(page.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "/register");
+  });
+
+  test("/login carries a same-origin `next` to the sign-up link and drops an off-site one", async ({ page }) => {
+    await page.goto("/login?next=%2Fapp%2Finbox%3Ftab%3Dall");
+    await expect(page.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "/register?next=%2Fapp%2Finbox%3Ftab%3Dall");
+    await page.goto("/register?next=%2Fapp%2Finbox");
+    await expect(page.getByRole("link", { name: /log in/i })).toHaveAttribute("href", "/login?next=%2Fapp%2Finbox");
+    for (const bad of ["//evil.example", "https://evil.example/x", "/\\evil.example", "javascript:alert(1)"]) {
+      await page.goto(`/login?next=${encodeURIComponent(bad)}`);
+      await expect(page.getByRole("link", { name: /create account/i }), bad).toHaveAttribute("href", "/register");
+    }
+    await page.goto("/register?next=%2F%2Fevil.example");
+    await expect(page.getByRole("link", { name: /log in/i })).toHaveAttribute("href", "/login");
   });
 
   test("/login shows the deactivated notice", async ({ page }) => {

@@ -13,7 +13,7 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0004_fn_notify.sql` | `render_text`, `render_template`, `enqueue_notification`, `claim_pending_notifications`, `finish_notification`, `mark_notifications_read`, `format_fare`, `format_local_time` |
 | `0005_fn_trips_tick.sql` | `local_now`, `materialize_trips`, `create_adhoc_trip`, `set_trip_status`, `run_tick` |
 | `0006_rls.sql` | `my_role()`, grants, RLS on every table |
-| `0007_realtime.sql` | `trip_locations` → `trips.last_*` + `realtime.send` broadcast on `trip:<id>`, publication membership, `realtime.messages` policy |
+| `0007_realtime.sql` | `trip_locations` → `trips.last_*` (throttled to one update per 15 s) + `realtime.send` broadcast on `trip:<id>`, publication membership, `replica identity full`, `realtime.messages` policy |
 | `0008_seed.sql` | settings row, message templates, default pickup points, default timetable (all `on conflict do nothing`) |
 | `0009_cron.sql` | `cron_tick()` + pg_cron jobs — no-op unless `pg_cron` **and** `pg_net` are installed |
 
@@ -119,8 +119,29 @@ npx supabase gen types typescript --db-url "postgres://postgres@127.0.0.1:54329/
   reminder moment at tick time as `departure_at − settings.reminder_lead_minutes`, so editing
   the lead in settings applies to already-materialised trips; `trips.reminder_at` is only
   authoritative for ad-hoc trips (null = no reminder).
-* Notification dedupe keys used by the tick: `daily:<date>:<user>`, `reminder:<trip>:<user>`,
-  `nudge:<trip>:<user>`, `manifest:<trip>:<user>`, `pr_expired:<request>:<user>`.
+* Notification dedupe keys used by the tick: `daily:<date>:<user>`,
+  `reminder:<trip>:<departure epoch s>:<user>`, `nudge:<trip>:<departure epoch s>:<user>`,
+  `manifest:<trip>:<departure epoch s>:<user>`, `pr_expired:<request>:<user>`. The departure
+  epoch (`extract(epoch from departure_at)::bigint`, i.e. `Math.round(Date.parse(departure_at) / 1000)`
+  in TypeScript) is part of the per-trip prefixes so that an admin who **moves `departure_at`
+  and nulls `reminder_sent_at` / `nudge_sent_at` / `manifest_sent_at`** gets those messages
+  re-sent for the new time, while resetting a flag without changing the time can never
+  double-send to the same recipient. A handler that sends one of these early (e.g.
+  `POST /api/admin/trips` with `notify`) must use the same prefix so the tick stays silent.
+* **Daily cleanup** runs once per local date: the tick writes `note = 'cleanup:<date>'` on the
+  run that did it and skips when any `tick_runs.note` **starts with** `cleanup:<date>` (the
+  admin's manual tick appends ` manual` to the note, which must still count).
+* **Live position**: every `trip_locations` insert broadcasts the fix on `trip:<trip_id>`, but
+  `trips.last_lat/lng/heading/speed_mps/location_at` is refreshed at most once per 15 s per
+  trip (newest `recorded_at` wins; older late-arriving fixes never move the bus backwards),
+  because `trips` is in the realtime publication and every update fans out to every open
+  page. `trips`, `bookings`, `pickup_requests` and `notifications` have `replica identity
+  full`, so `postgres_changes` UPDATE events carry the old row and clients can ignore
+  changes that only touch the `last_*` columns.
+* **One open pickup request per rider**: the partial unique index `pickup_requests_one_pending`
+  (`rider_id` where `status = 'pending'`) makes a second pending insert fail with `23505`;
+  the API maps it to a 409 pointing at the existing request. Once that request is
+  accepted / declined / cancelled / expired the rider can open a new one.
 * **RLS**: clients can only read (see the matrix at the top of `0006_rls.sql`); the only
   client write is a user's own `profiles` row (`full_name`, `phone`, `room`,
   `reminders_enabled`, `onboarded_at`). `anon` can read nothing — the public landing page

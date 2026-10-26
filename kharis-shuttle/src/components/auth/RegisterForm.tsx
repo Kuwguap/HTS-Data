@@ -205,7 +205,7 @@ export function RegisterForm({ requiresCode, hostelName, enquiryPhone, next: raw
             disabled={busy}
             error={errors.room}
           />
-          {requiresCode ? (
+          {codeVisible ? (
             <Field
               label="Hostel code"
               name="signup_code"
@@ -233,7 +233,7 @@ export function RegisterForm({ requiresCode, hostelName, enquiryPhone, next: raw
         </form>
       </Card>
       <div className="flex justify-center">
-        <Link href="/login" className="k-link">
+        <Link href={next ? `/login?next=${encodeURIComponent(next)}` : "/login"} className="k-link">
           Already have an account? Log in
         </Link>
       </div>

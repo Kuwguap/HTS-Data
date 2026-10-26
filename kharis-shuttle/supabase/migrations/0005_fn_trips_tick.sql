@@ -210,23 +210,12 @@ grant execute on function public.set_trip_status(uuid, public.trip_status, uuid,
 -- p_now, or minutes late, never double-sends. Called by pg_cron (cron_tick) and by
 -- POST /api/cron/tick. Returns the tick_runs audit row.
 --
--- Per-trip dedupe prefixes are '<kind>:<trip_id>:<departure epoch seconds>' (see
--- trip_dedupe_prefix), so an admin who moves departure_at and nulls the *_sent_at flag
--- gets the reminder / nudge / manifest re-sent for the new time, while a plain reset
--- without a time change still cannot double-send to the same recipient.
+-- Per-trip dedupe prefixes are '<kind>:<trip_id>:<departure epoch seconds>' (the key
+-- becomes '<prefix>:<user_id>'), so an admin who moves departure_at and nulls the
+-- *_sent_at flag gets the reminder / nudge / manifest re-sent for the new time, while a
+-- plain flag reset without a time change still cannot double-send to the same recipient.
+-- POST /api/admin/trips builds the same 'reminder:…' prefix for its early reminder.
 -- ---------------------------------------------------------------------------
-create or replace function public.trip_dedupe_prefix(p_kind text, p_trip_id uuid, p_departure_at timestamptz)
-returns text
-language sql
-immutable
-set search_path = public, extensions
-as $$
-  select p_kind || ':' || p_trip_id::text || ':' || extract(epoch from p_departure_at)::bigint::text;
-$$;
-
-revoke all on function public.trip_dedupe_prefix(text, uuid, timestamptz) from public, anon, authenticated;
-grant execute on function public.trip_dedupe_prefix(text, uuid, timestamptz) to service_role;
-
 create or replace function public.run_tick(p_now timestamptz default now())
 returns public.tick_runs
 language plpgsql
@@ -352,7 +341,7 @@ begin
           'trip_id', v_trip.id
         ),
         '/app/trips/' || v_trip.id::text,
-        public.trip_dedupe_prefix('reminder', v_trip.id, v_trip.departure_at),
+        'reminder:' || v_trip.id::text || ':' || extract(epoch from v_trip.departure_at)::bigint::text,
         greatest(least(extract(epoch from (v_trip.departure_at - v_now))::integer, 3600), 60),
         'normal',
         'trip:' || v_trip.id::text
@@ -397,7 +386,7 @@ begin
             'trip_id', v_trip.id
           ),
           '/app/trips/' || v_trip.id::text,
-          public.trip_dedupe_prefix('nudge', v_trip.id, v_trip.departure_at),
+          'nudge:' || v_trip.id::text || ':' || extract(epoch from v_trip.departure_at)::bigint::text,
           greatest(extract(epoch from (v_trip.departure_at - v_now))::integer, 60),
           'high',
           'trip:' || v_trip.id::text
@@ -449,7 +438,7 @@ begin
           'trip_id', v_trip.id
         ),
         '/driver/trips/' || v_trip.id::text,
-        'manifest:' || v_trip.id::text,
+        'manifest:' || v_trip.id::text || ':' || extract(epoch from v_trip.departure_at)::bigint::text,
         1800,
         'high',
         'manifest:' || v_trip.id::text
@@ -512,8 +501,9 @@ begin
    where push_status = 'pending'
      and created_at + make_interval(secs => ttl_seconds) < now();
 
-  -- 8. Daily housekeeping, once per local date.
-  if not exists (select 1 from public.tick_runs where note = 'cleanup:' || v_date::text) then
+  -- 8. Daily housekeeping, once per local date. Prefix match: the admin's manual tick
+  -- appends ' manual' to the note of the run it triggered ('cleanup:<date> manual').
+  if not exists (select 1 from public.tick_runs where note like 'cleanup:' || v_date::text || '%') then
     delete from public.trip_locations where inserted_at < v_now - interval '7 days';
     delete from public.notifications where created_at < v_now - interval '60 days';
     delete from public.tick_runs where ran_at < v_now - interval '14 days';

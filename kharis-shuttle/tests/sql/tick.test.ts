@@ -11,6 +11,8 @@ let c: Client;
 
 const MON = "2026-10-27";
 const at = (hhmm: string, date = MON) => `${date} ${hhmm}:00+00`;
+/** Departure epoch seconds, as embedded in the per-trip dedupe prefixes. */
+const epoch = (d: Date | string) => Math.round(new Date(d).getTime() / 1000);
 
 type Notif = { user_id: string; kind: string; title: string; body: string; url: string | null; dedupe_key: string; data: Record<string, unknown> };
 
@@ -108,7 +110,7 @@ describe("run_tick — a normal Monday", () => {
     expect(list[0]?.title).toBe("🚌 Shuttle at 7:30 AM");
     expect(list[0]?.body).toBe("13/14 seats left. GH₵10 cash. Tap to opt in.");
     expect(list[0]?.url).toBe(`/app/trips/${t.id}`);
-    expect(list[0]?.dedupe_key).toBe(`reminder:${t.id}:${IDS.s2}`);
+    expect(list[0]?.dedupe_key).toBe(`reminder:${t.id}:${epoch(at("07:30"))}:${IDS.s2}`);
     expect((await tripAt(MON, "07:30")).reminder_sent_at).toBeTruthy();
     // the 09:30 reminder is not due yet
     expect((await tripAt(MON, "09:30")).reminder_sent_at).toBeNull();
@@ -139,7 +141,7 @@ describe("run_tick — a normal Monday", () => {
     expect(byUser[IDS.s1]?.title).toBe("⏰ Leaving in 10 min");
     expect(byUser[IDS.s1]?.body).toBe("Be at Hostel main gate. Have GH₵10 cash ready.");
     expect(byUser[IDS.s2]?.body).toBe("Be at Hostel car park. Have GH₵10 cash ready.");
-    expect(byUser[IDS.s1]?.dedupe_key).toBe(`nudge:${t.id}:${IDS.s1}`);
+    expect(byUser[IDS.s1]?.dedupe_key).toBe(`nudge:${t.id}:${epoch(at("07:30"))}:${IDS.s1}`);
 
     // no default driver and trip.driver_id null → every active driver (just kofi)
     const manifests = await notifs("driver_manifest");
@@ -161,6 +163,7 @@ describe("run_tick — a normal Monday", () => {
     const r = await tick(c, at("09:16"));
     expect(r.manifests_enqueued).toBe(1);
     const m = await one<Notif>(c, "select * from notifications where kind = 'driver_manifest' and dedupe_key like $1", [`manifest:${t.id}:%`]);
+    expect(m.dedupe_key).toBe(`manifest:${t.id}:${epoch(at("09:30"))}:${IDS.admin}`);
     expect(m.user_id).toBe(IDS.admin);
     expect(m.body).toBe("0 riders — No bookings yet");
   });
@@ -297,6 +300,59 @@ describe("run_tick — reminder lead follows settings", () => {
     const r = await tick(c, at("18:56"));
     expect(await scalar<string>(c, "select count(*) from notifications where dedupe_key like $1", [`reminder:${silent.id}:%`])).toBe("0");
     expect(r.reminders_enqueued).toBe(0);
+  });
+});
+
+describe("run_tick — admin edits", () => {
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  it("treats the manual tick's 'cleanup:<date> manual' note as that day's cleanup marker", async () => {
+    await c.query("insert into tick_runs (now_ts, note) values ($1::timestamptz, $2)", [at("05:58"), `cleanup:${MON} manual`]);
+    const r = await tick(c, at("05:59"));
+    expect(r.note).toBeNull(); // cleanup already done today → no second marker
+    expect(await scalar<string>(c, "select count(*) from tick_runs where note like $1", [`cleanup:${MON}%`])).toBe("1");
+  });
+
+  it("re-sends a reminder exactly once when departure_at moves and reminder_sent_at is reset", async () => {
+    const t = await tripAt(MON, "07:30");
+    const sent = await tick(c, at("06:30"));
+    expect(sent.reminders_enqueued).toBe(3); // nobody booked
+    const oldKeys = (await notifs("trip_reminder")).map((n) => n.dedupe_key);
+    expect(oldKeys).toHaveLength(3);
+    expect(oldKeys.every((k) => k.startsWith(`reminder:${t.id}:${epoch(at("07:30"))}:`))).toBe(true);
+
+    // admin moves the trip an hour later and asks for the reminder again
+    await c.query("update trips set departure_at = $1::timestamptz, reminder_sent_at = null where id = $2", [at("08:30"), t.id]);
+    expect((await tick(c, at("06:31"))).reminders_enqueued).toBe(0); // new moment is 07:30
+    expect((await tripAt(MON, "08:30")).reminder_sent_at).toBeNull();
+
+    const resent = await tick(c, at("07:30"));
+    expect(resent.reminders_enqueued).toBe(3);
+    expect((await tick(c, at("07:31"))).reminders_enqueued).toBe(0);
+
+    const all = await notifs("trip_reminder");
+    expect(all).toHaveLength(6);
+    const newKeys = all.map((n) => n.dedupe_key).filter((k) => !oldKeys.includes(k));
+    expect(newKeys).toHaveLength(3);
+    expect(newKeys.every((k) => k.startsWith(`reminder:${t.id}:${epoch(at("08:30"))}:`))).toBe(true);
+    expect(newKeys.map((k) => k.split(":").pop()).sort()).toEqual([IDS.s1, IDS.s2, IDS.s3].sort());
+
+    // a bare flag reset WITHOUT a time change cannot double-send (same key)
+    await c.query("update trips set reminder_sent_at = null where id = $1", [t.id]);
+    expect((await tick(c, at("07:32"))).reminders_enqueued).toBe(0);
+    expect((await tripAt(MON, "08:30")).reminder_sent_at).toBeTruthy();
+    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'trip_reminder'")).toBe("6");
+  });
+
+  it("writes a plain 'cleanup:<date>' marker on the next local date", async () => {
+    const tue = await tick(c, at("00:01", "2026-10-28"));
+    expect(tue.note).toBe("cleanup:2026-10-28");
+    expect((await tick(c, at("00:02", "2026-10-28"))).note).toBeNull();
   });
 });
 

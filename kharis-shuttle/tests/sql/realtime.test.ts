@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Client } from "pg";
-import { IDS, as, makeTrip, one, resetDb, rows, scalar, trip } from "./helpers";
+import { IDS, as, makeTrip, resetDb, rows, scalar, trip } from "./helpers";
 
 let c: Client;
 
@@ -62,6 +62,38 @@ describe("trip_locations trigger", () => {
     expect(tr.last_heading).toBeNull();
   });
 
+  it("refreshes trips.last_* at most every 15 s (recorded_at based) but broadcasts every fix", async () => {
+    const t = await makeTrip(c, { minutesFromNow: 5 });
+    const fix = (lat: number, recordedAt: string) =>
+      c.query(`insert into trip_locations (trip_id, driver_id, lat, lng, recorded_at) values ($1, $2, $3, -1.5, $4::timestamptz)`, [
+        t.id,
+        IDS.driver,
+        lat,
+        recordedAt,
+      ]);
+    const broadcasts = () => scalar<string>(c, "select count(*) from realtime.messages where topic = $1", [`trip:${t.id}`]);
+
+    await fix(6.1, "2026-10-27 08:00:00+00");
+    let tr = await trip(c, t.id);
+    expect(tr.last_lat).toBe(6.1);
+    expect(tr.last_location_at?.toISOString()).toBe("2026-10-27T08:00:00.000Z");
+
+    // 5 s later: row + broadcast written, trips.last_* untouched
+    await fix(6.2, "2026-10-27 08:00:05+00");
+    tr = await trip(c, t.id);
+    expect(tr.last_lat).toBe(6.1);
+    expect(tr.last_location_at?.toISOString()).toBe("2026-10-27T08:00:00.000Z");
+    expect(await broadcasts()).toBe("2");
+
+    // 16 s after the last accepted fix: trips.last_* moves
+    await fix(6.3, "2026-10-27 08:00:16+00");
+    tr = await trip(c, t.id);
+    expect(tr.last_lat).toBe(6.3);
+    expect(tr.last_location_at?.toISOString()).toBe("2026-10-27T08:00:16.000Z");
+    expect(await broadcasts()).toBe("3");
+    expect(await scalar<string>(c, "select count(*) from trip_locations where trip_id = $1", [t.id])).toBe("3");
+  });
+
   it("still inserts the fix when the broadcast fails", async () => {
     const t = await makeTrip(c, { minutesFromNow: 5 });
     await c.query("begin");
@@ -99,7 +131,15 @@ describe("publication", () => {
   it("adds the four signal tables only when supabase_realtime exists", async () => {
     // Locally there is no publication → nothing to add, migration must still have applied.
     expect(await scalar<string>(c, "select count(*) from pg_publication where pubname = 'supabase_realtime'")).toBe("0");
-    const ri = await one<{ relreplident: string }>(c, "select relreplident from pg_class where relname = 'bookings'");
-    expect(ri.relreplident).toBe("f");
+    const ri = await rows<{ relname: string; relreplident: string }>(
+      c,
+      "select relname, relreplident from pg_class where relname in ('trips', 'bookings', 'pickup_requests', 'notifications') order by relname",
+    );
+    expect(ri).toEqual([
+      { relname: "bookings", relreplident: "f" },
+      { relname: "notifications", relreplident: "f" },
+      { relname: "pickup_requests", relreplident: "f" },
+      { relname: "trips", relreplident: "f" },
+    ]);
   });
 });

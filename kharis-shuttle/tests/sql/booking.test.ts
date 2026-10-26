@@ -367,3 +367,40 @@ describe("set_trip_status", () => {
     );
   });
 });
+
+describe("pickup_requests_one_pending", () => {
+  const insertPending = (riderId: string, tripId: string) =>
+    c.query(
+      `insert into pickup_requests (rider_id, trip_id, direction, pickup_location_id) values ($1, $2, 'to_campus', $3) returning id`,
+      [riderId, tripId, IDS.loc.gate],
+    );
+
+  async function codeOf(p: Promise<unknown>): Promise<string> {
+    try {
+      await p;
+      return "";
+    } catch (e) {
+      return (e as { code?: string }).code ?? "";
+    }
+  }
+
+  it("allows one pending request per rider; accepted/expired ones free the slot", async () => {
+    const t = await makeTrip(c);
+    const first = (await insertPending(IDS.s1, t.id)).rows[0] as { id: string };
+    expect(await codeOf(insertPending(IDS.s1, t.id))).toBe("23505");
+    // another rider is unaffected
+    const other = (await insertPending(IDS.s2, t.id)).rows[0] as { id: string };
+    expect(other.id).toBeTruthy();
+
+    await c.query("update pickup_requests set status = 'accepted', driver_id = $1, responded_at = now() where id = $2", [IDS.driver, first.id]);
+    const second = (await insertPending(IDS.s1, t.id)).rows[0] as { id: string };
+    expect(second.id).not.toBe(first.id);
+    expect(await codeOf(insertPending(IDS.s1, t.id))).toBe("23505");
+
+    await c.query("update pickup_requests set status = 'expired' where id = $1", [second.id]);
+    const third = (await insertPending(IDS.s1, t.id)).rows[0] as { id: string };
+    expect(third.id).toBeTruthy();
+    expect(await scalar<string>(c, "select count(*) from pickup_requests where rider_id = $1", [IDS.s1])).toBe("3");
+    expect(await scalar<string>(c, "select count(*) from pickup_requests where rider_id = $1 and status = 'pending'", [IDS.s1])).toBe("1");
+  });
+});
