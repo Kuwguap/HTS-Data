@@ -222,7 +222,8 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
       const decision = shouldSendFix(lastSent.current, fix);
       if (!decision.send) return;
       lastSent.current = fix;
-      getQueue().enqueue(toOut(fix), { immediate: decision.reason === "first" });
+      // First fix and stationary heartbeats go out at once; movement batches up.
+      getQueue().enqueue(toOut(fix), { immediate: decision.reason === "first" || decision.reason === "heartbeat" });
     },
     [getQueue],
   );

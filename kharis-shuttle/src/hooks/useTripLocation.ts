@@ -191,7 +191,8 @@ export function useTripLocation({ tripId, initialTrip, staleSeconds }: UseTripLo
         // Private channels need the user's JWT on the socket before joining.
         await supabase.realtime.setAuth();
       } catch {
-        startPolling();
+        // Only this effect's trip may start polling; a cancelled effect must not leak a timer.
+        if (!cancelled) startPolling();
         return;
       }
       if (cancelled) return;

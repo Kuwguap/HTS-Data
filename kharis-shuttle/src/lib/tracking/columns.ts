@@ -2,6 +2,12 @@
 export const TRIP_LOCATION_COLUMNS: readonly string[] = ["last_lat", "last_lng", "last_heading", "last_speed_mps", "last_location_at"];
 
 /**
+ * What a location-only UPDATE actually touches: the trips `updated_at` trigger bumps
+ * that column on every row update too, so subscriptions must ignore it as well.
+ */
+export const TRIP_LOCATION_UPDATE_COLUMNS: readonly string[] = [...TRIP_LOCATION_COLUMNS, "updated_at"];
+
+/**
  * True when a postgres_changes UPDATE touched only ignored columns. Needs the
  * full old row (replica identity full); an `old` that carries just the primary
  * key (or nothing) cannot be judged, so the change counts as relevant.
