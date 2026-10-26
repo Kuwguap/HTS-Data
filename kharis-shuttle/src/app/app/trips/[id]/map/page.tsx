@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { AppHeader } from "@/components/layout/AppHeader";
 import LiveTripMap from "@/components/map/LiveTripMapLoader";
-import { TripsAutoRefresh } from "@/components/trips/TripsAutoRefresh";
 import { Button, Card, LiveChip, Pill } from "@/components/ui";
 import { requirePageAuth } from "@/lib/auth/page";
 import { getActivePickupLocations, getSettings } from "@/lib/data/settings";
@@ -33,8 +32,7 @@ export default async function TripMapPage({ params }: { params: Promise<{ id: st
           greeting={`${formatTime(trip.departure_at, settings.timezone)} · ${directionShort(trip.direction)}`}
           right={<LiveChip live={live} label={live ? "Live" : trip.status === "boarding" || trip.status === "departed" ? "Waiting" : "Off"} />}
         />
-        <TripsAutoRefresh userId={user.id} tripId={trip.id} />
-
+        {/* No TripsAutoRefresh here: the map's useTripLocation already follows the trip row and GPS broadcasts. */}
         <div
           className="k-card"
           style={{

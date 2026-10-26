@@ -328,6 +328,8 @@ create table if not exists public.pickup_requests (
 
 create index if not exists pickup_requests_rider_idx on public.pickup_requests (rider_id, created_at desc);
 create index if not exists pickup_requests_pending_idx on public.pickup_requests (expires_at) where status = 'pending';
+-- One open request per rider (the API maps the 23505 to a 409 pointing at the existing one).
+create unique index if not exists pickup_requests_one_pending on public.pickup_requests (rider_id) where status = 'pending';
 create index if not exists pickup_requests_trip_idx on public.pickup_requests (trip_id) where trip_id is not null;
 
 drop trigger if exists pickup_requests_set_updated_at on public.pickup_requests;

@@ -72,5 +72,40 @@ export const POST = withHandler<RouteCtx<{ id: string; bookingId: string }>>(asy
   });
   if (error) throw fromPostgresError(error);
   if (!booking) throw new ApiError(500, "INTERNAL", "Could not update the booking.");
-  return ok({ booking });
+
+  // A no-show frees a seat but SQL deliberately does not auto-promote (the driver may
+  // seat whoever is at the gate). Fill it from the waitlist now and tell the riders.
+  let promoted: Booking[] = [];
+  if (input.status === "no_show") {
+    const { data: rows, error: promoteError } = await admin.rpc("promote_waitlist", { p_trip_id: id });
+    if (promoteError) throw fromPostgresError(promoteError);
+    promoted = (rows ?? []) as Booking[];
+    if (promoted.length) {
+      const settings = await getSettings();
+      const base = {
+        time: formatTime(trip.departure_at, settings.timezone),
+        destination: trip.destination_label,
+        origin: trip.origin_label,
+        trip_id: trip.id,
+      };
+      const locationIds = [...new Set(promoted.map((b) => b.pickup_location_id).filter((v): v is string => !!v))];
+      const names = new Map<string, string>();
+      if (locationIds.length) {
+        const { data: locs } = await admin.from("pickup_locations").select("id, name").in("id", locationIds);
+        for (const l of locs ?? []) names.set(l.id, l.name);
+      }
+      for (const b of promoted) {
+        await notifyAndDrain(admin, {
+          userIds: [b.user_id],
+          kind: "booking_promoted",
+          vars: { ...base, pickup: (b.pickup_location_id && names.get(b.pickup_location_id)) || "your pickup point" },
+          url: `/app/trips/${trip.id}`,
+          dedupePrefix: `booking_promoted:${b.id}`,
+          urgency: "high",
+          collapseTag: `trip:${trip.id}`,
+        });
+      }
+    }
+  }
+  return ok({ booking, promoted });
 });

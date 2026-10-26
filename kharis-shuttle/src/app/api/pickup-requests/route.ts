@@ -16,6 +16,8 @@ const REQUEST_TTL_MS = 45 * 60_000;
 /** Never expire a request sooner than this, even when the trip leaves "now". */
 const REQUEST_MIN_TTL_MS = 5 * 60_000;
 const PUSH_TTL_SECONDS = 900;
+/** A bus that already left is on the road: give the driver at least the push's lifetime to respond. */
+const REQUEST_ON_ROAD_TTL_MS = PUSH_TTL_SECONDS * 1000;
 
 /** GET /api/pickup-requests — my requests, newest first. */
 export const GET = withHandler(async () => {
@@ -80,7 +82,9 @@ export const POST = withHandler(async (request) => {
   let expiresMs = now + REQUEST_TTL_MS;
   if (trip) {
     const departure = new Date(trip.departure_at).getTime();
-    expiresMs = Math.min(expiresMs, Math.max(departure, now + REQUEST_MIN_TTL_MS));
+    const onRoad = trip.status === "boarding" || trip.status === "departed" || departure <= now;
+    const floor = now + (onRoad ? REQUEST_ON_ROAD_TTL_MS : REQUEST_MIN_TTL_MS);
+    expiresMs = Math.min(expiresMs, Math.max(departure, floor));
   }
 
   const row: TablesInsert<"pickup_requests"> = {
@@ -96,6 +100,20 @@ export const POST = withHandler(async (request) => {
     expires_at: new Date(expiresMs).toISOString(),
   };
   const { data: created, error } = await admin.from("pickup_requests").insert(row).select("*").single();
+  if (error?.code === "23505") {
+    // Lost the race against a double tap: the partial unique index allows one pending request.
+    const { data: existing } = await admin
+      .from("pickup_requests")
+      .select("id")
+      .eq("rider_id", user.id)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    throw new ApiError(409, "CONFLICT", "You already have a request waiting for the driver.", {
+      request_id: existing?.id ?? null,
+    });
+  }
   if (error || !created) throw new ApiError(500, "INTERNAL", "Could not send your request. Try again.");
 
   const place =

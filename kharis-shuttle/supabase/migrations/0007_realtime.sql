@@ -1,7 +1,7 @@
 -- 0007_realtime.sql — live bus position (broadcast) + change-signal publication.
 --
--- * Every trip_locations insert updates trips.last_* (newest recorded_at wins) and
---   broadcasts the fix on the private topic 'trip:<trip_id>' via realtime.send().
+-- * Every trip_locations insert broadcasts the fix on the private topic 'trip:<trip_id>'
+--   via realtime.send(); trips.last_* is refreshed at most every 15 s (newest wins).
 --   The broadcast is wrapped so a Realtime hiccup never loses the GPS row.
 -- * trips / bookings / pickup_requests / notifications go into the supabase_realtime
 --   publication (clients use postgres_changes purely as an invalidation signal).
@@ -14,6 +14,9 @@ security definer
 set search_path = public, extensions
 as $$
 begin
+  -- trips is in the realtime publication, so every UPDATE here fans out to every
+  -- student page as a refresh signal. Fold position updates to at most one per
+  -- 15 s per trip (the per-fix broadcast below still carries every point live).
   update public.trips
      set last_lat = new.lat,
          last_lng = new.lng,
@@ -21,7 +24,7 @@ begin
          last_speed_mps = new.speed_mps,
          last_location_at = new.recorded_at
    where id = new.trip_id
-     and (last_location_at is null or last_location_at <= new.recorded_at);
+     and (last_location_at is null or last_location_at + interval '15 seconds' <= new.recorded_at);
 
   begin
     perform realtime.send(

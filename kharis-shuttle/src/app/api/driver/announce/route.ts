@@ -46,7 +46,9 @@ export const POST = withHandler(async (request) => {
     if (!statusError && boarding) trip = boarding;
   }
 
-  const studentIds = await listActiveStudentIds(admin, { remindersOnly: true });
+  // The return-trip shout-out goes to every active student (it replaces the group message),
+  // not only those who opted into scheduled reminders.
+  const studentIds = await listActiveStudentIds(admin, { remindersOnly: false });
   await notifyAndDrain(admin, {
     userIds: studentIds,
     kind: "return_announcement",
