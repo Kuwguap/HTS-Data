@@ -10,6 +10,7 @@ type DayOff = { service_date: string; reason: string | null };
 type Props = { daysOff: DayOff[]; today: string; timeZone: string };
 
 type AddResponse = { trips_deleted: number; trips_cancelled: number; riders_notified: number };
+type RemoveResponse = { trips_restored: number; trips_deleted: number; riders_notified: number };
 
 export function DaysOffEditor({ daysOff, today, timeZone }: Props) {
   const router = useRouter();
@@ -44,11 +45,17 @@ export function DaysOffEditor({ daysOff, today, timeZone }: Props) {
   }
 
   async function remove(d: DayOff) {
-    if (!window.confirm(`Resume service on ${formatShortDate(d.service_date + "T12:00:00Z", timeZone)}? Trips for that day are recreated by the next tick.`)) return;
+    if (
+      !window.confirm(
+        `Resume service on ${formatShortDate(d.service_date + "T12:00:00Z", timeZone)}? Trips cancelled for the day off are put back on (riders get a push); the next tick recreates the rest.`,
+      )
+    )
+      return;
     setRemoving(d.service_date);
     try {
-      await api.delete(`/api/admin/days-off/${d.service_date}`);
-      toast("✅ Service resumed");
+      const res = await api.delete<RemoveResponse>(`/api/admin/days-off/${d.service_date}`);
+      const extra = res.trips_restored ? ` · ${res.trips_restored} trip${res.trips_restored === 1 ? "" : "s"} back on, ${res.riders_notified} riders told` : "";
+      toast(`✅ Service resumed${extra}`, { tone: "green" });
       router.refresh();
     } catch (err) {
       toast(`⚠️ ${errorMessage(err)}`, { tone: "red" });

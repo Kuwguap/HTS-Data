@@ -6,7 +6,7 @@ import { Avatar, Button, Empty, Field, List, Pill, Row, Sheet, Switch, useToast 
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
 import type { BookingWithRider, TripWithDriver } from "@/lib/data/admin";
 import type { Trip } from "@/lib/db.types";
-import { formatDayTime, formatTime, localDateString, zonedDateTime } from "@/lib/time";
+import { formatDayLabel, formatDayTime, localDateString, zonedDateTime } from "@/lib/time";
 import { BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, directionShort, isTripActive, TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips";
 
 type Driver = { id: string; full_name: string; role: string; phone: string | null };
@@ -32,6 +32,8 @@ export function TripAdmin({ trip, bookings, drivers, timeZone }: Props) {
   });
   const [reason, setReason] = useState("");
   const editable = isTripActive(trip);
+  // A schedule-linked trip owns its (schedule_time_id, service_date) slot: only the time can move.
+  const dateLocked = trip.schedule_time_id != null;
 
   const close = () => {
     setSheet(null);
@@ -65,8 +67,8 @@ export function TripAdmin({ trip, bookings, drivers, timeZone }: Props) {
   };
   const saveTime = (e: FormEvent) => {
     e.preventDefault();
-    const departure_at = zonedDateTime(date, time, timeZone).toISOString();
-    void patch({ departure_at }, "departure_at", (r) => `✅ Now leaves at ${formatTime(r.trip.departure_at, timeZone)} · ${r.notified} riders told`);
+    const departure_at = zonedDateTime(dateLocked ? localDateString(trip.departure_at, timeZone) : date, time, timeZone).toISOString();
+    void patch({ departure_at }, "departure_at", (r) => `✅ Now leaves at ${formatDayTime(r.trip.departure_at, new Date(), timeZone)} · ${r.notified} riders told`);
   };
   const toggleBookings = (next: boolean) => void patch({ bookings_enabled: next }, "bookings_enabled", () => (next ? "✅ Bookings open" : "⏸ Bookings closed"));
 
@@ -180,12 +182,19 @@ export function TripAdmin({ trip, bookings, drivers, timeZone }: Props) {
 
       <Sheet open={sheet === "time"} onClose={close} title="Change departure" footer={<Button size="big" type="submit" form="time-form" loading={busy}>🔄 Update time</Button>}>
         <form id="time-form" onSubmit={saveTime} className="flex flex-col gap-3">
-          <div className="k-grid-2">
-            <Field label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-            <Field label="Leaves at" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-          </div>
+          {dateLocked ? (
+            <Field label={`Leaves at · ${formatDayLabel(trip.departure_at, new Date(), timeZone)}`} type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+          ) : (
+            <div className="k-grid-2">
+              <Field label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+              <Field label="Leaves at" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+            </div>
+          )}
           {error ? <div className="k-error">{error}</div> : null}
-          <p className="k-help">Booked riders get a &ldquo;Shuttle updated&rdquo; push with the new time.</p>
+          <p className="k-help">
+            Booked riders and the driver get a &ldquo;Shuttle updated&rdquo; push with the new time.
+            {dateLocked ? " This departure comes from the schedule, so it stays on its day — add an extra trip for another day." : ""}
+          </p>
         </form>
       </Sheet>
 

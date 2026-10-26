@@ -2,6 +2,7 @@
  * What goes inside a web-push message. Mirrors `PushPayload` in lib/push/sw-logic.ts
  * (the service worker side) — keep the two in sync.
  */
+import { APP_NAME } from "@/lib/constants";
 import type { NotificationKind } from "@/lib/db.types";
 import { publicEnv } from "@/lib/env";
 
@@ -97,14 +98,26 @@ function budgetFor(payload: PushPayload, key: "body" | "title" | "tag"): number 
 }
 
 /**
+ * Caps (escaped bytes) applied to the short fields before the body is measured, so an
+ * oversized title or tag can never eat the body's room. A lock-screen title longer than
+ * this is unreadable anyway.
+ */
+export const MAX_TITLE_BYTES = 200;
+export const MAX_TAG_BYTES = 100;
+
+/**
  * Build the payload for one outbox row. Never throws; always fits in
- * MAX_PAYLOAD_BYTES once serialised, measured on the escaped JSON (long bodies are
- * cut with an ellipsis, then the title, then optional media / url / tag as a last resort).
+ * MAX_PAYLOAD_BYTES once serialised, measured on the escaped JSON. The short fields
+ * (title, tag) are capped first, then the body is cut with an ellipsis to whatever room
+ * is left; if that is still not enough the optional media, then url / tag, then the
+ * title go, and the body is re-fitted from the original text after each step so the
+ * message keeps as much of its body as the final budget allows.
  */
 export function buildPayload(row: NotificationLike): PushPayload {
+  const originalBody = (row.body || "").trim();
   const payload: PushPayload = {
-    title: (row.title || "").trim() || "Kharis Shuttle",
-    body: (row.body || "").trim(),
+    title: (row.title || "").trim() || APP_NAME,
+    body: originalBody,
     url: toSameOriginPath(row.url),
     tag: row.collapse_tag?.trim() || String(row.kind),
     kind: row.kind,
@@ -114,20 +127,32 @@ export function buildPayload(row: NotificationLike): PushPayload {
   if (row.badge) payload.badge = row.badge;
 
   const fits = () => payloadBytes(payload) <= MAX_PAYLOAD_BYTES;
+  const fitBody = () => {
+    payload.body = truncateEscaped(originalBody, budgetFor(payload, "body"));
+  };
   const shrink: Array<() => void> = [
     () => {
-      payload.body = truncateEscaped(payload.body, budgetFor(payload, "body"));
+      // Cheap caps on the short fields (no-ops for sane rows) so they cannot crowd out the body.
+      payload.title = truncateEscaped(payload.title, MAX_TITLE_BYTES);
+      payload.tag = truncateEscaped(payload.tag ?? String(payload.kind), MAX_TAG_BYTES);
     },
+    fitBody,
     () => {
-      // Pathological title (or icon URLs): drop optional media, cut the title too.
+      // Oversized icon / badge URLs: drop the optional media and give the body its room back.
       delete payload.icon;
       delete payload.badge;
-      payload.title = truncateEscaped(payload.title, budgetFor(payload, "title"));
+      fitBody();
     },
     () => {
-      // Something other than text is huge (url / tag straight from the row): fall back to safe values.
+      // Something else is huge (url / tag straight from the row): fall back to safe values.
       payload.url = DEFAULT_URL;
       payload.tag = truncateEscaped(payload.tag ?? String(payload.kind), budgetFor(payload, "tag"));
+      fitBody();
+    },
+    () => {
+      // Last resort: the title itself must fit whatever is left.
+      payload.title = truncateEscaped(payload.title, budgetFor(payload, "title"));
+      fitBody();
     },
   ];
   for (const step of shrink) {

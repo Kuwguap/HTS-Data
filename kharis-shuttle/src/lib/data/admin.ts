@@ -13,6 +13,7 @@ import type {
   TickRun,
   Trip,
   TripDirection,
+  TripStatus,
   UserRole,
 } from "@/lib/db.types";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -33,12 +34,27 @@ async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promis
 /** Seconds without a tick before the overview shows the red warning. */
 export const TICK_STALE_SECONDS = 5 * 60;
 
+/** Appended to tick_runs.note by POST /api/admin/tick ("Run tick now"). */
+export const MANUAL_TICK_NOTE = "manual";
+
+export function isManualTick(run: Pick<TickRun, "note">): boolean {
+  return (run.note ?? "").includes(MANUAL_TICK_NOTE);
+}
+
 export type TickHealth = {
+  /** Last automatic (cron) run; falls back to any run when none is recorded. */
   last: TickRun | null;
   ageSeconds: number | null;
   ok: boolean;
   recent: TickRun[];
 };
+
+/** Derive health from `recent` (newest first): a hand-run tick must not hide a dead cron. */
+export function deriveTickHealth(recent: TickRun[], now = new Date()): TickHealth {
+  const last = recent.find((r) => !isManualTick(r)) ?? recent[0] ?? null;
+  const ageSeconds = secondsSince(last?.ran_at, now);
+  return { last, ageSeconds, ok: ageSeconds != null && ageSeconds <= TICK_STALE_SECONDS, recent };
+}
 
 export async function tickHealth(limit = 20, now = new Date()): Promise<TickHealth> {
   const admin = createAdminClient();
@@ -51,9 +67,7 @@ export async function tickHealth(limit = 20, now = new Date()): Promise<TickHeal
     },
     [] as TickRun[],
   );
-  const last = recent[0] ?? null;
-  const ageSeconds = secondsSince(last?.ran_at, now);
-  return { last, ageSeconds, ok: ageSeconds != null && ageSeconds <= TICK_STALE_SECONDS, recent };
+  return deriveTickHealth(recent, now);
 }
 
 export type Overview = {
@@ -167,16 +181,28 @@ export async function listDaysOff(): Promise<Array<{ service_date: string; reaso
 
 export type UserFilter = UserRole | "deactivated" | "all";
 
+/**
+ * Make a search term safe inside a PostgREST `or=(…)` filter: the reserved characters
+ * `, . : ( ) " \` (and the LIKE wildcard `%`) become spaces. `_` is kept: usernames contain
+ * it, and as a one-character wildcard it can only widen the match.
+ */
+export function sanitizeSearchTerm(q: string | null | undefined): string {
+  return (q ?? "")
+    .replace(/[,.:()"\\%]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export async function listUsers(opts: { q?: string | null; role?: UserFilter | null; limit?: number } = {}): Promise<Profile[]> {
   const admin = createAdminClient();
   return safe(
     "users",
     async () => {
       let query = admin.from("profiles").select("*").order("full_name").limit(opts.limit ?? 1000);
-      const q = opts.q?.trim();
-      if (q) {
-        const term = q.replace(/[%_,]/g, " ").trim();
-        if (term) query = query.or(`username.ilike.%${term}%,full_name.ilike.%${term}%,room.ilike.%${term}%,phone.ilike.%${term}%`);
+      const term = sanitizeSearchTerm(opts.q);
+      if (term) {
+        const pattern = `%${term}%`;
+        query = query.or(["username", "full_name", "room", "phone"].map((col) => `${col}.ilike.${pattern}`).join(","));
       }
       if (opts.role === "deactivated") query = query.eq("is_active", false);
       else if (opts.role && opts.role !== "all") query = query.eq("role", opts.role);
@@ -322,18 +348,119 @@ export async function listTemplates(): Promise<Array<MessageTemplate & { is_defa
   });
 }
 
-export type ReportRow = { label: string; rides: number; capacity: number; trips: number; noShows: number };
+export type ReportRow = { label: string; rides: number; capacity: number; trips: number; noShows: number; missed: number };
 export type PickupReportRow = { label: string; count: number };
+export type TripReportRow = {
+  id: string;
+  service_date: string;
+  time: string;
+  direction: TripDirection;
+  status: TripStatus;
+  rides: number;
+  /** Confirmed seats on a trip that expired (nobody ran it in the app): not rides. */
+  missed: number;
+  capacity: number;
+  fillPct: number;
+};
 
 export type Report = {
   from: string;
   to: string;
-  totals: { rides: number; trips: number; capacity: number; fillPct: number; noShows: number; noShowPct: number; waitlisted: number };
+  totals: { rides: number; trips: number; capacity: number; fillPct: number; noShows: number; noShowPct: number; waitlisted: number; missed: number };
   perDay: ReportRow[];
   perDeparture: ReportRow[];
   perPickup: PickupReportRow[];
-  perTrip: Array<{ id: string; service_date: string; time: string; direction: TripDirection; status: string; rides: number; capacity: number; fillPct: number }>;
+  perTrip: TripReportRow[];
 };
+
+type ReportTrip = Pick<Trip, "id" | "service_date" | "departure_at" | "direction" | "status" | "seat_capacity">;
+type ReportBooking = Pick<Booking, "id" | "trip_id" | "status" | "pickup_location_id">;
+
+/** A trip still ahead of `now` has not carried anyone yet: it stays out of the report. */
+export function isPendingTrip(trip: Pick<Trip, "status" | "departure_at">, now: Date): boolean {
+  return (trip.status === "scheduled" || trip.status === "boarding") && Date.parse(trip.departure_at) > now.getTime();
+}
+
+/** Pure aggregation behind reports() (unit-tested without a database). */
+export function buildReport(
+  opts: { from: string; to: string; timeZone: string; now?: Date },
+  trips: ReportTrip[],
+  bookings: ReportBooking[],
+  locName: Map<string, string>,
+): Report {
+  const now = opts.now ?? new Date();
+  const counted = trips.filter((t) => t.status !== "cancelled" && !isPendingTrip(t, now));
+  const countedIds = new Set(counted.map((t) => t.id));
+  const expired = new Set(counted.filter((t) => t.status === "expired").map((t) => t.id));
+
+  const byTrip = new Map<string, { rides: number; noShows: number; waitlisted: number; missed: number }>();
+  const perPickupMap = new Map<string, number>();
+  for (const b of bookings) {
+    if (!countedIds.has(b.trip_id)) continue;
+    const agg = byTrip.get(b.trip_id) ?? { rides: 0, noShows: 0, waitlisted: 0, missed: 0 };
+    const rode = b.status === "boarded" || (b.status === "confirmed" && !expired.has(b.trip_id));
+    if (rode) {
+      agg.rides++;
+      const key = b.pickup_location_id ? (locName.get(b.pickup_location_id) ?? "Unknown pickup") : "No pickup chosen";
+      perPickupMap.set(key, (perPickupMap.get(key) ?? 0) + 1);
+    } else if (b.status === "confirmed") agg.missed++;
+    else if (b.status === "no_show") agg.noShows++;
+    else if (b.status === "waitlisted") agg.waitlisted++;
+    byTrip.set(b.trip_id, agg);
+  }
+
+  const bump = (map: Map<string, ReportRow>, label: string, rides: number, capacity: number, noShows: number, missed: number) => {
+    const row = map.get(label) ?? { label, rides: 0, capacity: 0, trips: 0, noShows: 0, missed: 0 };
+    row.rides += rides;
+    row.capacity += capacity;
+    row.trips += 1;
+    row.noShows += noShows;
+    row.missed += missed;
+    map.set(label, row);
+  };
+
+  const perDayMap = new Map<string, ReportRow>();
+  const perDepMap = new Map<string, ReportRow>();
+  const totals = { rides: 0, trips: 0, capacity: 0, noShows: 0, waitlisted: 0, missed: 0 };
+  const perTrip: TripReportRow[] = [];
+  for (const t of counted) {
+    const agg = byTrip.get(t.id) ?? { rides: 0, noShows: 0, waitlisted: 0, missed: 0 };
+    const time = formatTime(t.departure_at, opts.timeZone);
+    const dep = `${time} · ${t.direction === "to_campus" ? "To campus" : "To hostel"}`;
+    bump(perDayMap, t.service_date, agg.rides, t.seat_capacity, agg.noShows, agg.missed);
+    bump(perDepMap, dep, agg.rides, t.seat_capacity, agg.noShows, agg.missed);
+    totals.rides += agg.rides;
+    totals.trips += 1;
+    totals.capacity += t.seat_capacity;
+    totals.noShows += agg.noShows;
+    totals.waitlisted += agg.waitlisted;
+    totals.missed += agg.missed;
+    perTrip.push({
+      id: t.id,
+      service_date: t.service_date,
+      time,
+      direction: t.direction,
+      status: t.status,
+      rides: agg.rides,
+      missed: agg.missed,
+      capacity: t.seat_capacity,
+      fillPct: t.seat_capacity ? Math.round((agg.rides / t.seat_capacity) * 100) : 0,
+    });
+  }
+  const fillPct = totals.capacity ? Math.round((totals.rides / totals.capacity) * 100) : 0;
+  const noShowBase = totals.rides + totals.noShows;
+  const noShowPct = noShowBase ? Math.round((totals.noShows / noShowBase) * 100) : 0;
+
+  return {
+    from: opts.from,
+    to: opts.to,
+    totals: { ...totals, fillPct, noShowPct },
+    perDay: [...perDayMap.values()].sort((a, b) => a.label.localeCompare(b.label)),
+    perDeparture: [...perDepMap.values()],
+    perPickup: [...perPickupMap.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+    perTrip,
+  };
+}
 
 /** Default range: the current week (Mon..today). */
 export function defaultReportRange(now = new Date(), timeZone?: string): { from: string; to: string } {
@@ -343,7 +470,7 @@ export function defaultReportRange(now = new Date(), timeZone?: string): { from:
   return { from, to: today };
 }
 
-export async function reports(opts: { from: string; to: string }): Promise<Report> {
+export async function reports(opts: { from: string; to: string }, now = new Date()): Promise<Report> {
   const settings = await getSettings();
   const admin = createAdminClient();
   const trips = await safe(
@@ -375,98 +502,43 @@ export async function reports(opts: { from: string; to: string }): Promise<Repor
           if (error) throw error;
           return data ?? [];
         },
-        [] as Array<Pick<Booking, "id" | "trip_id" | "status" | "pickup_location_id">>,
+        [] as ReportBooking[],
       )
     : [];
   const locations = await listLocations();
   const locName = new Map(locations.map((l) => [l.id, l.name]));
+  return buildReport({ from: opts.from, to: opts.to, timeZone: settings.timezone, now }, trips, bookings, locName);
+}
 
-  const rideStatuses = new Set(["confirmed", "boarded"]);
-  const byTrip = new Map<string, { rides: number; noShows: number; waitlisted: number }>();
-  const perPickupMap = new Map<string, number>();
-  for (const b of bookings) {
-    const agg = byTrip.get(b.trip_id) ?? { rides: 0, noShows: 0, waitlisted: 0 };
-    if (rideStatuses.has(b.status)) {
-      agg.rides++;
-      const key = b.pickup_location_id ? (locName.get(b.pickup_location_id) ?? "Unknown pickup") : "No pickup chosen";
-      perPickupMap.set(key, (perPickupMap.get(key) ?? 0) + 1);
-    } else if (b.status === "no_show") agg.noShows++;
-    else if (b.status === "waitlisted") agg.waitlisted++;
-    byTrip.set(b.trip_id, agg);
-  }
-
-  const bump = (map: Map<string, ReportRow>, label: string, rides: number, capacity: number, noShows: number) => {
-    const row = map.get(label) ?? { label, rides: 0, capacity: 0, trips: 0, noShows: 0 };
-    row.rides += rides;
-    row.capacity += capacity;
-    row.trips += 1;
-    row.noShows += noShows;
-    map.set(label, row);
-  };
-
-  const perDayMap = new Map<string, ReportRow>();
-  const perDepMap = new Map<string, ReportRow>();
-  const totals = { rides: 0, trips: 0, capacity: 0, noShows: 0, waitlisted: 0 };
-  const perTrip: Report["perTrip"] = [];
-  for (const t of trips) {
-    const agg = byTrip.get(t.id) ?? { rides: 0, noShows: 0, waitlisted: 0 };
-    const time = formatTime(t.departure_at, settings.timezone);
-    const dep = `${time} · ${t.direction === "to_campus" ? "To campus" : "To hostel"}`;
-    bump(perDayMap, t.service_date, agg.rides, t.seat_capacity, agg.noShows);
-    bump(perDepMap, dep, agg.rides, t.seat_capacity, agg.noShows);
-    totals.rides += agg.rides;
-    totals.trips += 1;
-    totals.capacity += t.seat_capacity;
-    totals.noShows += agg.noShows;
-    totals.waitlisted += agg.waitlisted;
-    perTrip.push({
-      id: t.id,
-      service_date: t.service_date,
-      time,
-      direction: t.direction,
-      status: t.status,
-      rides: agg.rides,
-      capacity: t.seat_capacity,
-      fillPct: t.seat_capacity ? Math.round((agg.rides / t.seat_capacity) * 100) : 0,
-    });
-  }
-  const fillPct = totals.capacity ? Math.round((totals.rides / totals.capacity) * 100) : 0;
-  const noShowBase = totals.rides + totals.noShows;
-  const noShowPct = noShowBase ? Math.round((totals.noShows / noShowBase) * 100) : 0;
-
-  return {
-    from: opts.from,
-    to: opts.to,
-    totals: { ...totals, fillPct, noShowPct },
-    perDay: [...perDayMap.values()].sort((a, b) => a.label.localeCompare(b.label)),
-    perDeparture: [...perDepMap.values()],
-    perPickup: [...perPickupMap.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
-    perTrip,
-  };
+/**
+ * One CSV cell: quoted when it holds a quote, comma or line break; text starting with
+ * `= + - @` gets a leading apostrophe so a spreadsheet never runs it as a formula.
+ */
+export function csvCell(v: string | number): string {
+  let s = String(v);
+  if (typeof v === "string" && /^[=+\-@]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /** CSV export of a report (one block per section). */
 export function reportToCsv(r: Report): string {
-  const esc = (v: string | number) => {
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
+  const esc = csvCell;
   const lines: string[] = [];
   lines.push(`Report,${r.from},${r.to}`);
   lines.push("");
-  lines.push("Totals,rides,trips,capacity,fill_pct,no_shows,no_show_pct,waitlisted");
-  lines.push(["", r.totals.rides, r.totals.trips, r.totals.capacity, r.totals.fillPct, r.totals.noShows, r.totals.noShowPct, r.totals.waitlisted].map(esc).join(","));
+  lines.push("Totals,rides,trips,capacity,fill_pct,no_shows,no_show_pct,waitlisted,missed");
+  lines.push(["", r.totals.rides, r.totals.trips, r.totals.capacity, r.totals.fillPct, r.totals.noShows, r.totals.noShowPct, r.totals.waitlisted, r.totals.missed].map(esc).join(","));
   lines.push("");
-  lines.push("Per day,date,rides,trips,capacity,no_shows");
-  for (const row of r.perDay) lines.push(["", row.label, row.rides, row.trips, row.capacity, row.noShows].map(esc).join(","));
+  lines.push("Per day,date,rides,trips,capacity,no_shows,missed");
+  for (const row of r.perDay) lines.push(["", row.label, row.rides, row.trips, row.capacity, row.noShows, row.missed].map(esc).join(","));
   lines.push("");
-  lines.push("Per departure,departure,rides,trips,capacity,no_shows");
-  for (const row of r.perDeparture) lines.push(["", row.label, row.rides, row.trips, row.capacity, row.noShows].map(esc).join(","));
+  lines.push("Per departure,departure,rides,trips,capacity,no_shows,missed");
+  for (const row of r.perDeparture) lines.push(["", row.label, row.rides, row.trips, row.capacity, row.noShows, row.missed].map(esc).join(","));
   lines.push("");
   lines.push("Per pickup,pickup,rides");
   for (const row of r.perPickup) lines.push(["", row.label, row.count].map(esc).join(","));
   lines.push("");
-  lines.push("Per trip,trip_id,date,time,direction,status,rides,capacity,fill_pct");
-  for (const row of r.perTrip) lines.push(["", row.id, row.service_date, row.time, row.direction, row.status, row.rides, row.capacity, row.fillPct].map(esc).join(","));
+  lines.push("Per trip,trip_id,date,time,direction,status,rides,missed,capacity,fill_pct");
+  for (const row of r.perTrip) lines.push(["", row.id, row.service_date, row.time, row.direction, row.status, row.rides, row.missed, row.capacity, row.fillPct].map(esc).join(","));
   return lines.join("\n") + "\n";
 }

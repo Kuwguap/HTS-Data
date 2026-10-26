@@ -39,18 +39,22 @@ export type TemplateMeta = {
   placeholders: string[];
 };
 
-/** Human labels, triggers and placeholders per kind (shown on /admin/templates). */
+/**
+ * Human labels, triggers and placeholders per kind (shown on /admin/templates).
+ * `placeholders` lists only the variables EVERY sender of that kind passes (run_tick in
+ * 0005_fn_trips_tick.sql plus the src/app/api routes), so a chip never inserts a blank.
+ */
 export const TEMPLATE_META: Record<NotificationKind, TemplateMeta> = {
   daily_announcement: { label: "Daily announcement", when: "Every morning at the announcement time · all students with reminders on", placeholders: ["hostel", "campus", "times", "fare", "date"] },
-  trip_reminder: { label: "Trip reminder", when: "Before each departure (reminder lead) · students without a seat", placeholders: ["time", "seats_left", "seats", "fare", "destination", "hostel"] },
+  trip_reminder: { label: "Trip reminder", when: "Before each departure (reminder lead) · students without a seat", placeholders: ["time", "seats_left", "seats", "fare", "origin", "destination", "hostel"] },
   trip_nudge: { label: "Leaving-soon nudge", when: "Minutes before departure (nudge) · riders with a seat", placeholders: ["count", "time", "pickup", "fare", "destination"] },
   trip_departed: { label: "Shuttle departed", when: "When the driver taps Depart · riders not on board", placeholders: ["time", "destination"] },
   booking_confirmed: { label: "Seat confirmed", when: "Right after a student reserves a seat", placeholders: ["time", "destination", "pickup", "fare", "date"] },
   booking_waitlisted: { label: "Waitlisted", when: "When the shuttle is full and the student joins the waitlist", placeholders: ["count", "time", "destination", "pickup"] },
-  booking_promoted: { label: "Promoted from waitlist", when: "When a seat opens up for a waitlisted student", placeholders: ["time", "destination", "pickup", "fare"] },
+  booking_promoted: { label: "Promoted from waitlist", when: "When a seat opens up for a waitlisted student", placeholders: ["time", "destination", "pickup"] },
   booking_cancelled: { label: "Booking cancelled", when: "When staff cancel a student's seat", placeholders: ["time", "destination", "message"] },
-  trip_cancelled: { label: "Trip cancelled", when: "When an admin or driver cancels a departure · booked riders", placeholders: ["time", "destination", "message", "date"] },
-  trip_updated: { label: "Trip updated", when: "When the departure time changes · booked riders", placeholders: ["time", "destination", "message"] },
+  trip_cancelled: { label: "Trip cancelled", when: "When an admin or driver cancels a departure · booked riders", placeholders: ["time", "destination", "message"] },
+  trip_updated: { label: "Trip updated", when: "When the departure time changes or a day off is lifted · booked riders and the driver", placeholders: ["time", "date", "destination", "message"] },
   driver_manifest: { label: "Driver manifest", when: "Before departure (manifest lead) · the trip's driver", placeholders: ["time", "destination", "count", "summary"] },
   driver_booking_update: { label: "Driver booking update", when: "After the manifest went out and a booking changes · the driver", placeholders: ["name", "message", "pickup", "time"] },
   pickup_request_new: { label: "New pickup request", when: "When a student asks for a pickup · the driver", placeholders: ["name", "pickup", "message"] },
@@ -59,7 +63,7 @@ export const TEMPLATE_META: Record<NotificationKind, TemplateMeta> = {
   pickup_request_expired: { label: "Pickup request expired", when: "When nobody responded in time · the student", placeholders: ["pickup"] },
   return_announcement: { label: "Return announcement", when: "When the driver announces a return trip · all students", placeholders: ["origin", "hostel", "count", "seats"] },
   broadcast: { label: "Announcement (broadcast)", when: "When an admin sends an announcement", placeholders: ["title", "message", "hostel"] },
-  test: { label: "Test notification", when: "When someone turns on reminders", placeholders: ["name", "hostel"] },
+  test: { label: "Test notification", when: "When someone turns on reminders", placeholders: ["name"] },
 };
 
 /** Sample values for the live preview on /admin/templates. */
@@ -82,13 +86,17 @@ export const TEMPLATE_SAMPLE_VARS: Record<string, string> = {
   title: "Water outage",
 };
 
-/** Same substitution as SQL render_template: {key} → value or '', then squash double spaces. */
+/**
+ * Same substitution as SQL render_text (0004_fn_notify.sql): one pass over the ORIGINAL
+ * template (a value containing "{other}" is emitted literally, never re-expanded), unknown
+ * placeholders → '', runs of spaces/tabs collapse to one space, newlines are kept, then trim.
+ */
 export function renderTemplate(text: string, vars: Record<string, string | number | null | undefined>): string {
   return text
     .replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key: string) => {
       const v = vars[key];
       return v == null ? "" : String(v);
     })
-    .trim()
-    .replace(/\s{2,}/g, " ");
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }

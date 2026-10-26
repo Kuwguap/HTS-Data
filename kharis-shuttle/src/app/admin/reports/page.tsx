@@ -5,6 +5,7 @@ import { Empty, List, Pill, Row, StatTile } from "@/components/ui";
 import { defaultReportRange, reports } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import { addDays, formatShortDate, localDateString } from "@/lib/time";
+import { TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips";
 import { isoDate } from "@/lib/validation/common";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,7 @@ export default async function AdminReportsPage({ searchParams }: { searchParams:
   let to = toP.success ? toP.data : thisWeek.to;
   if (from > to) [from, to] = [to, from];
 
-  const r = await reports({ from, to });
+  const r = await reports({ from, to }, now);
   const rangeLabel = `${formatShortDate(`${from}T12:00:00Z`, "UTC")} – ${formatShortDate(`${to}T12:00:00Z`, "UTC")}`;
   const csvHref = `/api/admin/reports?from=${from}&to=${to}&format=csv`;
 
@@ -45,6 +46,9 @@ export default async function AdminReportsPage({ searchParams }: { searchParams:
         <StatTile tone={r.totals.noShowPct > 20 ? "red" : "purple"} icon="hand" value={`${r.totals.noShowPct}%`} label={`No-shows · ${r.totals.noShows}`} art="flag" />
         <StatTile value={r.totals.waitlisted} label="Left on waitlist" art="clock" zero={r.totals.waitlisted === 0} />
       </div>
+      <p className="k-help" style={{ textAlign: "center", margin: 0 }}>
+        Trips still ahead are left out. {r.totals.missed ? `${r.totals.missed} seat${r.totals.missed === 1 ? "" : "s"} on missed trips (never started in the app) are not counted as rides.` : ""}
+      </p>
 
       <a href={csvHref} download className="k-btn k-btn--secondary">
         ⬇️ Download CSV
@@ -58,7 +62,7 @@ export default async function AdminReportsPage({ searchParams }: { searchParams:
             <Row
               key={d.label}
               title={formatShortDate(`${d.label}T12:00:00Z`, "UTC")}
-              subtitle={`${d.trips} trips · ${d.capacity} seats${d.noShows ? ` · ${d.noShows} no-shows` : ""}`}
+              subtitle={`${d.trips} trips · ${d.capacity} seats${d.noShows ? ` · ${d.noShows} no-shows` : ""}${d.missed ? ` · ${d.missed} missed` : ""}`}
               trailing={<Pill tone="blue" sm>{d.rides} rides</Pill>}
               chevron={false}
             />
@@ -95,8 +99,17 @@ export default async function AdminReportsPage({ searchParams }: { searchParams:
               key={t.id}
               href={`/admin/trips/${t.id}`}
               title={`${t.time} · ${t.direction === "to_campus" ? "To campus" : "To hostel"}`}
-              subtitle={`${formatShortDate(`${t.service_date}T12:00:00Z`, "UTC")} · ${t.rides}/${t.capacity} · ${t.status}`}
-              trailing={<Pill tone={t.fillPct >= 80 ? "green" : t.fillPct >= 40 ? "amber" : "neutral"} sm>{t.fillPct}%</Pill>}
+              subtitle={`${formatShortDate(`${t.service_date}T12:00:00Z`, "UTC")} · ${t.rides}/${t.capacity}${t.missed ? ` · ${t.missed} missed` : ""}`}
+              trailing={
+                <>
+                  <Pill tone={TRIP_STATUS_TONE[t.status]} sm>
+                    {TRIP_STATUS_LABEL[t.status]}
+                  </Pill>
+                  <Pill tone={t.fillPct >= 80 ? "green" : t.fillPct >= 40 ? "amber" : "neutral"} sm>
+                    {t.fillPct}%
+                  </Pill>
+                </>
+              }
             />
           ))}
         </List>

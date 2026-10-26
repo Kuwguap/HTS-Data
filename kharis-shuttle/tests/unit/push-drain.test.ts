@@ -8,7 +8,16 @@ vi.mock("server-only", () => ({}));
 const { sendToSubscription } = vi.hoisted(() => ({ sendToSubscription: vi.fn() }));
 vi.mock("@/lib/push/send", () => ({ sendToSubscription }));
 
-import { MAX_PUSH_ATTEMPTS, SUBSCRIPTION_FAIL_LIMIT, drainOutbox, isVapidRejection, pLimit, parseSubscriptions } from "@/lib/push/drain";
+import {
+  MAX_PUSH_ATTEMPTS,
+  MAX_VAPID_HANDBACKS,
+  SUBSCRIPTION_FAIL_LIMIT,
+  drainOutbox,
+  isVapidRejection,
+  pLimit,
+  parseSubscriptions,
+  vapidHandBacks,
+} from "@/lib/push/drain";
 
 type Sub = { id: string; endpoint: string; p256dh: string; auth: string };
 type Row = {
@@ -51,13 +60,18 @@ function row(id: string, subs: Sub[], extra: Partial<Row> = {}): Row {
  * A scripted stand-in for the service-role client: `rpc` answers from the batches
  * list, `from()` records writes against in-memory subscriptions / notifications tables.
  */
-function fakeAdmin(batches: Row[][], opts: { attempts?: Record<string, number>; failCounts?: Record<string, number> } = {}) {
+function fakeAdmin(
+  batches: Row[][],
+  opts: { attempts?: Record<string, number>; failCounts?: Record<string, number>; errors?: Record<string, string> } = {},
+) {
   const finished: Array<{ id: string; status: string; error: string | null }> = [];
   const deletedSubs: string[] = [];
   const subUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const notificationUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const failCounts: Record<string, number> = { ...opts.failCounts };
   const attempts: Record<string, number> = { ...opts.attempts };
+  /** push_error per notification id, as the table would hold it. */
+  const errors: Record<string, string | null> = { ...opts.errors };
   const queue = [...batches];
   let claims = 0;
 
@@ -68,6 +82,7 @@ function fakeAdmin(batches: Row[][], opts: { attempts?: Record<string, number>; 
     }
     if (name === "finish_notification") {
       finished.push({ id: args.p_id as string, status: args.p_status as string, error: (args.p_error as string) ?? null });
+      errors[args.p_id as string] = args.p_status === "sent" ? null : ((args.p_error as string) ?? null);
       return { data: null, error: null };
     }
     throw new Error(`unexpected rpc ${name}`);
@@ -95,11 +110,14 @@ function fakeAdmin(batches: Row[][], opts: { attempts?: Record<string, number>; 
         }
       }
       if (table === "notifications") {
-        if (state.op === "select") return { data: { push_attempts: attempts[state.id!] ?? 1 }, error: null };
+        if (state.op === "select") {
+          return { data: { push_attempts: attempts[state.id!] ?? 1, push_error: errors[state.id!] ?? null }, error: null };
+        }
         if (state.op === "update") {
           for (const id of targets()) {
             notificationUpdates.push({ id, patch: state.patch! });
             if (typeof state.patch!.push_attempts === "number") attempts[id] = state.patch!.push_attempts as number;
+            if (typeof state.patch!.push_error === "string") errors[id] = state.patch!.push_error as string;
           }
           return { data: null, error: null };
         }
@@ -128,6 +146,7 @@ function fakeAdmin(batches: Row[][], opts: { attempts?: Record<string, number>; 
     notificationUpdates,
     failCounts,
     attempts,
+    errors,
     get claims() {
       return claims;
     },
@@ -174,7 +193,7 @@ describe("drainOutbox", () => {
 
     const result = await drainOutbox({ admin: fake.admin, limit: 4 });
 
-    expect(result).toMatchObject({ claimed: 7, sent: 2, failed: 2, skipped: 2, gone: 3, requeued: 1, deliveries: 2, batches: 3 });
+    expect(result).toMatchObject({ claimed: 7, sent: 2, failed: 2, skipped: 2, gone: 3, requeued: 1, reserved: 0, deliveries: 2, batches: 3 });
     expect(fake.claims).toBe(3); // two batches + the empty one that ends the loop
     expect(fake.admin.rpc).toHaveBeenCalledWith("claim_pending_notifications", { p_limit: 4 });
 
@@ -243,21 +262,106 @@ describe("drainOutbox", () => {
       expect(fake.notificationUpdates).toEqual([
         { id: "V", patch: expect.objectContaining({ push_status: "pending", push_attempts: 0 }) },
       ]);
-      expect(fake.notificationUpdates[0]!.patch.push_error).toMatch(/vapid/);
+      expect(fake.notificationUpdates[0]!.patch.push_error).toBe("vapid-misconfig x1 (403 vapid rejected)");
       expect(result.rows[0]).toMatchObject({ id: "V", status: "pending", delivered: 0 });
     });
 
-    it("401 and a missing key pair count the same; a 429 alongside does not spend the attempt either", async () => {
+    it("401 and a missing key pair count the same (every device rejected our keys → handed back)", async () => {
       scriptSends({
         w1: { ok: false, status: 401, gone: false, retryable: false, error: "401 vapid rejected" },
         w2: { ok: false, status: 0, gone: false, retryable: false, error: "vapid not configured" },
-        w3: RETRY,
       });
-      const fake = fakeAdmin([[{ ...row("W", [sub("w1"), sub("w2"), sub("w3")]), push_attempts: 3 }]]);
+      const fake = fakeAdmin([[{ ...row("W", [sub("w1"), sub("w2")]), push_attempts: 3 }]]);
       await drainOutbox({ admin: fake.admin });
       expect(fake.notificationUpdates).toEqual([{ id: "W", patch: expect.objectContaining({ push_status: "pending", push_attempts: 2 }) }]);
-      // only the 429 device is a device-side failure
+      expect(fake.subUpdates).toEqual([]);
+      expect(fake.finished).toEqual([]);
+    });
+
+    it("a mix of 403 and 429 is an ordinary attempt: the row is retried via finish_notification and the VAPID device is not blamed", async () => {
+      scriptSends({ w1: VAPID, w3: RETRY });
+      const fake = fakeAdmin([[{ ...row("W", [sub("w1"), sub("w3")]), push_attempts: 3 }]]);
+      const result = await drainOutbox({ admin: fake.admin });
+      expect(fake.notificationUpdates).toEqual([]); // no refund
+      expect(fake.finished).toEqual([{ id: "W", status: "pending", error: expect.stringMatching(/^attempt 3: /) }]);
+      expect(result).toMatchObject({ requeued: 1, failed: 0 });
+      // only the 429 device is a device-side failure; w1 keeps its fail_count
       expect(fake.subUpdates.map((u) => u.id)).toEqual(["w3"]);
+    });
+
+    it("a mixed row on its last attempt fails like any other, without disabling the VAPID-rejected device", async () => {
+      scriptSends({ x1: VAPID, x2: RETRY });
+      const fake = fakeAdmin([[{ ...row("X", [sub("x1"), sub("x2")]), push_attempts: MAX_PUSH_ATTEMPTS }]], {
+        failCounts: { x1: SUBSCRIPTION_FAIL_LIMIT - 1, x2: 0 },
+      });
+      const result = await drainOutbox({ admin: fake.admin });
+      expect(result).toMatchObject({ failed: 1, requeued: 0 });
+      expect(fake.finished).toEqual([{ id: "X", status: "failed", error: expect.stringMatching(/gave up/) }]);
+      expect(fake.subUpdates.map((u) => u.id)).toEqual(["x2"]);
+      expect(fake.failCounts.x1).toBe(SUBSCRIPTION_FAIL_LIMIT - 1); // healthy device untouched
+    });
+
+    it("a mix of 403 and a permanent device error fails the row (a real try happened)", async () => {
+      scriptSends({ p1: VAPID, p2: PERM });
+      const fake = fakeAdmin([[{ ...row("P", [sub("p1"), sub("p2")]), push_attempts: 1 }]]);
+      const result = await drainOutbox({ admin: fake.admin });
+      expect(result).toMatchObject({ failed: 1, requeued: 0 });
+      expect(fake.notificationUpdates).toEqual([]);
+      expect(fake.subUpdates.map((u) => u.id)).toEqual(["p2"]);
+    });
+
+    it("gone devices do not stop a hand-back: 410 + 403 is still only our keys at fault", async () => {
+      scriptSends({ g1: GONE, g2: VAPID });
+      const fake = fakeAdmin([[{ ...row("G", [sub("g1"), sub("g2")]), push_attempts: 1 }]]);
+      const result = await drainOutbox({ admin: fake.admin });
+      expect(fake.deletedSubs).toEqual(["g1"]);
+      expect(result).toMatchObject({ requeued: 1, gone: 1, failed: 0 });
+      expect(fake.notificationUpdates).toEqual([{ id: "G", patch: expect.objectContaining({ push_status: "pending", push_attempts: 0 }) }]);
+    });
+
+    it("counts hand-backs in push_error and gives up after MAX_VAPID_HANDBACKS", async () => {
+      scriptSends({ c1: VAPID });
+      const fake = fakeAdmin(
+        [[{ ...row("C", [sub("c1")]), push_attempts: 1 }], [{ ...row("D", [sub("c1")]), push_attempts: 1 }]],
+        { errors: { C: `vapid-misconfig x${MAX_VAPID_HANDBACKS - 1} (403 vapid rejected)`, D: `vapid-misconfig x${MAX_VAPID_HANDBACKS} (403 vapid rejected)` } },
+      );
+      const result = await drainOutbox({ admin: fake.admin, limit: 1 });
+
+      // C: one more hand-back is allowed (the 30th)
+      expect(fake.notificationUpdates).toEqual([
+        { id: "C", patch: { push_status: "pending", push_error: `vapid-misconfig x${MAX_VAPID_HANDBACKS} (403 vapid rejected)`, push_attempts: 0 } },
+      ]);
+      // D: the 31st is one too many → failed for good, device still untouched
+      expect(fake.finished).toEqual([{ id: "D", status: "failed", error: expect.stringMatching(/vapid rejected 31 times/) }]);
+      expect(fake.subUpdates).toEqual([]);
+      expect(result).toMatchObject({ claimed: 2, requeued: 1, failed: 1 });
+    });
+
+    it("an unrelated previous error starts the VAPID count from one", async () => {
+      scriptSends({ e1: VAPID });
+      const fake = fakeAdmin([[{ ...row("E", [sub("e1")]), push_attempts: 2 }]], { errors: { E: "attempt 1: 429 retry" } });
+      await drainOutbox({ admin: fake.admin });
+      expect(fake.notificationUpdates[0]!.patch).toMatchObject({ push_error: "vapid-misconfig x1 (403 vapid rejected)", push_attempts: 1 });
+    });
+
+    it("reads push_attempts along with push_error when the claim did not return it", async () => {
+      scriptSends({ r1: VAPID });
+      const fake = fakeAdmin([[row("R", [sub("r1")])]], { attempts: { R: 4 }, errors: { R: "vapid-misconfig x2 (403 vapid rejected)" } });
+      await drainOutbox({ admin: fake.admin });
+      expect(fake.notificationUpdates).toEqual([
+        { id: "R", patch: { push_status: "pending", push_error: "vapid-misconfig x3 (403 vapid rejected)", push_attempts: 3 } },
+      ]);
+      const reads = (fake.admin.from as ReturnType<typeof vi.fn>).mock.calls.filter(([t]) => t === "notifications").length;
+      expect(reads).toBe(2); // one select, one update
+    });
+
+    it("vapidHandBacks parses the counter prefix", () => {
+      expect(vapidHandBacks(null)).toBe(0);
+      expect(vapidHandBacks("")).toBe(0);
+      expect(vapidHandBacks("attempt 2: 429 retry")).toBe(0);
+      expect(vapidHandBacks("vapid-misconfig x7 (403 vapid rejected)")).toBe(7);
+      expect(vapidHandBacks("vapid-misconfig x31")).toBe(31);
+      expect(vapidHandBacks("vapid-misconfig xnope")).toBe(0);
     });
 
     it("still counts as sent when another device accepted it", async () => {
@@ -297,6 +401,17 @@ describe("drainOutbox", () => {
     expect(result.claimed).toBe(1);
     expect(result.sent).toBe(1);
     expect(result.durationMs).toBeGreaterThanOrEqual(20);
+  });
+
+  it("does nothing at all when the budget is zero or negative (no claim, nothing hidden behind the cooldown)", async () => {
+    const fake = fakeAdmin([[row("B0", [sub("b0")])]]);
+    for (const budgetMs of [0, -5]) {
+      const result = await drainOutbox({ admin: fake.admin, budgetMs });
+      expect(result).toMatchObject({ claimed: 0, batches: 0, requeued: 0, reserved: 0, rows: [] });
+    }
+    expect(fake.admin.rpc).not.toHaveBeenCalled();
+    expect(sendToSubscription).not.toHaveBeenCalled();
+    expect(fake.notificationUpdates).toEqual([]);
   });
 
   it("hands rows back as pending when the budget runs out mid-batch, refunding the attempt", async () => {

@@ -7,7 +7,8 @@
  * Attempt accounting: the claim bumps `push_attempts` and returns the bumped value.
  * A row only "spends" that attempt when we actually tried to deliver it. Rows we hand
  * back untouched (budget spent, claimed twice in one run, VAPID misconfiguration) get
- * the attempt refunded (`handBack`), so a row can never fail without 5 real tries.
+ * the attempt refunded (`handBack`), so a row can never fail without 5 real tries —
+ * except that a row handed back for VAPID more than MAX_VAPID_HANDBACKS times is failed.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ClaimedSubscription, Database, FunctionReturns, PushStatus } from "@/lib/db.types";
@@ -19,6 +20,14 @@ type ClaimedRow = FunctionReturns<"claim_pending_notifications">[number] & { pus
 
 export const MAX_PUSH_ATTEMPTS = 5;
 export const SUBSCRIPTION_FAIL_LIMIT = 10;
+/**
+ * How often a row may be handed back because *our* VAPID keys were rejected before we
+ * give up on it. Tracked in push_error as `vapid-misconfig x<n>`: the attempt is refunded
+ * on every hand-back, so without this cap a misconfigured deployment would retry the
+ * same rows every minute until their TTL expired (days, for a broadcast).
+ */
+export const MAX_VAPID_HANDBACKS = 30;
+const VAPID_ERROR_PREFIX = "vapid-misconfig x";
 
 export type DrainOptions = {
   /** Rows claimed per round trip (default 100). */
@@ -56,6 +65,12 @@ export type DrainResult = {
   gone: number;
   /** Rows put back to `pending` for another attempt (including rows handed back unsent). */
   requeued: number;
+  /**
+   * Rows the claim served again although this run had already handled them (hand-back
+   * cooldown over, or a fake clock). They are handed back untouched and not counted in
+   * `claimed` / `requeued` / `rows`.
+   */
+  reserved: number;
   /** Successful device deliveries (a row can count several). */
   deliveries: number;
   /** Claim round trips made. */
@@ -212,29 +227,39 @@ async function markFailure(admin: Admin, ledger: SubscriptionLedger, ids: string
   );
 }
 
+/** The row's current push_attempts (after the claim bumped it) and push_error; null when unreadable. */
+async function readNotification(admin: Admin, id: string): Promise<{ attempts: number | null; error: string | null } | null> {
+  const { data, error } = await admin.from("notifications").select("push_attempts, push_error").eq("id", id).maybeSingle();
+  if (error) {
+    console.error(`[push] could not read notification ${id}:`, error.message);
+    return null;
+  }
+  return {
+    attempts: typeof data?.push_attempts === "number" ? data.push_attempts : null,
+    error: typeof data?.push_error === "string" ? data.push_error : null,
+  };
+}
+
 /** The row's push_attempts after the claim bumped it; null when unknown. */
 async function attemptsOf(admin: Admin, row: ClaimedRow): Promise<number | null> {
   if (typeof row.push_attempts === "number") return row.push_attempts;
-  const { data, error } = await admin.from("notifications").select("push_attempts").eq("id", row.id).maybeSingle();
-  if (error) {
-    console.error(`[push] could not read push_attempts for ${row.id}:`, error.message);
-    return null;
-  }
-  return typeof data?.push_attempts === "number" ? data.push_attempts : null;
+  return (await readNotification(admin, row.id))?.attempts ?? null;
 }
 
 /**
  * Put a row back to `pending` without spending the attempt the claim charged for it
  * (nothing was sent). Leaves push_claimed_at alone: claim_pending_notifications()
  * ignores the row for its cooldown, so the next run picks it up, not this one.
+ * `reason` null keeps whatever push_error the row already carries (a re-served row
+ * must not lose the useful error its first pass wrote).
  */
-async function handBack(admin: Admin, row: ClaimedRow, reason: string): Promise<void> {
+async function handBack(admin: Admin, row: ClaimedRow, reason: string | null): Promise<void> {
   const attempts = await attemptsOf(admin, row);
   const { error } = await admin
     .from("notifications")
     .update({
       push_status: "pending",
-      push_error: reason.slice(0, 500),
+      ...(reason === null ? {} : { push_error: reason.slice(0, 500) }),
       ...(attempts === null ? {} : { push_attempts: Math.max(0, attempts - 1) }),
     })
     .eq("id", row.id);
@@ -243,6 +268,13 @@ async function handBack(admin: Admin, row: ClaimedRow, reason: string): Promise<
     // Last resort: at least stop it sitting in `sending` for two minutes.
     await finish(admin, row.id, "pending", reason);
   }
+}
+
+/** How many times this row was already handed back for VAPID, read from its push_error. */
+export function vapidHandBacks(pushError: string | null | undefined): number {
+  if (!pushError || !pushError.startsWith(VAPID_ERROR_PREFIX)) return 0;
+  const n = Number.parseInt(pushError.slice(VAPID_ERROR_PREFIX.length), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 type RowContext = {
@@ -285,12 +317,12 @@ async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
   const goneIds: string[] = [];
   const failedIds: string[] = [];
   let retryable = false;
-  let vapidRejected = false;
+  let vapidRejected = 0;
   sends.forEach((r, i) => {
     const sub = subs[i]!;
     if (r.ok) okIds.push(sub.id);
     else if (r.gone) goneIds.push(sub.id);
-    else if (isVapidRejection(r)) vapidRejected = true; // our keys, not the device: no fail_count
+    else if (isVapidRejection(r)) vapidRejected++; // our keys, not the device: no fail_count
     else {
       failedIds.push(sub.id);
       if (r.retryable) retryable = true;
@@ -317,9 +349,21 @@ async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
     record("skipped", 0, summary);
     return;
   }
-  if (vapidRejected) {
-    // Misconfigured VAPID keys: keep the row pending (attempt refunded) until the keys are fixed.
-    await handBack(admin, row, `vapid rejected (${summary})`);
+  if (vapidRejected > 0 && vapidRejected + goneIds.length === subs.length) {
+    // Every device still alive rejected *our* keys: nothing was really tried, so keep the row
+    // pending with the attempt refunded until the keys are fixed — a bounded number of times.
+    // (A mix with real device outcomes — 429, 400, … — is an ordinary attempt, handled below;
+    // the VAPID-rejected devices are simply not blamed for it.)
+    const previous = await readNotification(admin, row.id);
+    const count = vapidHandBacks(previous?.error) + 1;
+    if (count > MAX_VAPID_HANDBACKS) {
+      await finish(admin, row.id, "failed", `vapid rejected ${count} times, giving up (${summary})`);
+      result.failed++;
+      record("failed", 0, summary);
+      return;
+    }
+    const known: ClaimedRow = typeof row.push_attempts === "number" || previous?.attempts == null ? row : { ...row, push_attempts: previous.attempts };
+    await handBack(admin, known, `${VAPID_ERROR_PREFIX}${count} (${summary})`);
     recordHandBack(result, row.id, summary, subs.length);
     return;
   }
@@ -360,11 +404,15 @@ export async function drainOutbox(options: DrainOptions = {}): Promise<DrainResu
     skipped: 0,
     gone: 0,
     requeued: 0,
+    reserved: 0,
     deliveries: 0,
     batches: 0,
     durationMs: 0,
     rows: [],
   };
+
+  // No time at all: claiming would only hide the rows behind the 45 s cooldown for nothing.
+  if (budgetMs <= 0) return result;
 
   let admin: Admin;
   try {
@@ -401,12 +449,12 @@ export async function drainOutbox(options: DrainOptions = {}): Promise<DrainResu
         fresh.push(row);
       }
     }
-    // A re-served row is handed back untouched (attempt refunded); it waits for the next run.
+    // A re-served row is handed back untouched (attempt refunded, push_error kept); it waits for the next run.
     await Promise.all(
       repeats.map((row) =>
         rowLimit(async () => {
-          await handBack(admin, row, "already handled in this run");
-          recordHandBack(result, row.id, "reclaimed");
+          await handBack(admin, row, null);
+          result.reserved++;
         }),
       ),
     );

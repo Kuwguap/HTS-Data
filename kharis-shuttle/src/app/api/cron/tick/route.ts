@@ -69,8 +69,11 @@ const handle = withHandler(async (request: Request) => {
     if (tickError) console.error("[tick] run_tick failed:", tickError.message);
   }
 
-  // Drain even when the tick failed: rows enqueued by the app still need delivering.
-  const push = await drainOutbox({ admin, budgetMs: drainBudgetMs(Date.now() - startedAt) });
+  // Drain even when the tick failed: rows enqueued by the app still need delivering —
+  // unless run_tick ate the whole window: claiming with no time left would only hide
+  // the rows behind the claim cooldown, so leave them for the next tick instead.
+  const budgetMs = drainBudgetMs(Date.now() - startedAt);
+  const push = budgetMs > 0 ? await drainOutbox({ admin, budgetMs }) : null;
 
   const body = {
     ok: !tickError,
@@ -78,17 +81,21 @@ const handle = withHandler(async (request: Request) => {
     tick_ran: ranTick,
     tick,
     tick_error: tickError ? tickError.message : null,
-    push: {
-      claimed: push.claimed,
-      sent: push.sent,
-      failed: push.failed,
-      skipped: push.skipped,
-      gone: push.gone,
-      requeued: push.requeued,
-      deliveries: push.deliveries,
-      batches: push.batches,
-      durationMs: push.durationMs,
-    },
+    push: push
+      ? {
+          claimed: push.claimed,
+          sent: push.sent,
+          failed: push.failed,
+          skipped: push.skipped,
+          gone: push.gone,
+          requeued: push.requeued,
+          reserved: push.reserved,
+          deliveries: push.deliveries,
+          batches: push.batches,
+          durationMs: push.durationMs,
+        }
+      : null,
+    push_skipped_reason: push ? null : "no time left for the drain after run_tick",
     durationMs: Date.now() - startedAt,
     at: new Date().toISOString(),
   };

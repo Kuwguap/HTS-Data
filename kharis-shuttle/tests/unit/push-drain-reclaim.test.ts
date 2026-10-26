@@ -96,7 +96,7 @@ function fakeAdmin(rows: NotificationRow[], opts: { returnAttempts?: boolean } =
     const result = () => {
       if (tableName === "notifications") {
         const r = table.get(state.id!)!;
-        if (state.op === "select") return { data: { push_attempts: r.push_attempts }, error: null };
+        if (state.op === "select") return { data: { push_attempts: r.push_attempts, push_error: r.push_error }, error: null };
         if (state.op === "update") {
           Object.assign(r, state.patch);
           return { data: null, error: null };
@@ -148,10 +148,12 @@ describe("drainOutbox does not re-send rows it handed back in the same run", () 
     const x = fake.table.get("X")!;
     expect(x.push_status).toBe("pending");
     expect(x.push_attempts).toBe(1);
+    // the re-serve hand-back keeps the useful error from the real attempt
+    expect(x.push_error).toBe("attempt 1: 429 retry");
     // claim 1 sent it; claim 2 re-served it and the loop stopped (nothing new in it)
     expect(fake.claims).toEqual([["X"], ["X"]]);
-    expect(result).toMatchObject({ claimed: 1, sent: 0, failed: 0, requeued: 2, batches: 2 });
-    expect(result.rows.map((r) => r.error)).toEqual(["429 retry", "reclaimed"]);
+    expect(result).toMatchObject({ claimed: 1, sent: 0, failed: 0, requeued: 1, reserved: 1, batches: 2 });
+    expect(result.rows.map((r) => r.error)).toEqual(["429 retry"]);
     // the device did fail once, and only once
     expect(fake.subUpdates).toEqual([{ id: "x1", patch: { fail_count: 1 } }]);
   });
@@ -184,9 +186,10 @@ describe("drainOutbox does not re-send rows it handed back in the same run", () 
 
     expect(fake.claims).toEqual([["X"], ["X", "Y"], ["X"]]);
     expect(sendToSubscription).toHaveBeenCalledTimes(2); // X once, Y once
-    expect(fake.table.get("X")).toMatchObject({ push_status: "pending", push_attempts: 1 });
+    expect(fake.table.get("X")).toMatchObject({ push_status: "pending", push_attempts: 1, push_error: "attempt 1: 429 retry" });
     expect(fake.table.get("Y")).toMatchObject({ push_status: "sent", push_attempts: 1 });
-    expect(result).toMatchObject({ claimed: 2, sent: 1, batches: 3 });
+    expect(result).toMatchObject({ claimed: 2, sent: 1, requeued: 1, reserved: 2, batches: 3 });
+    expect(result.rows.map((r) => r.id).sort()).toEqual(["X", "Y"]);
   });
 
   it("a row that keeps failing needs five separate runs before it is given up on", async () => {

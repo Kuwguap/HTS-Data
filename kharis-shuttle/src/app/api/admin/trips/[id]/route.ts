@@ -3,13 +3,17 @@ import { requireRole } from "@/lib/auth/require";
 import { getTripAdmin } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import type { TablesUpdate } from "@/lib/db.types";
-import { notifyAndDrain } from "@/lib/notify/enqueue";
+import { listDriverIds, notifyAndDrain } from "@/lib/notify/enqueue";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { formatTime, localDateString } from "@/lib/time";
+import { formatDayTime, formatTime, localDateString } from "@/lib/time";
 import { tripPatchSchema } from "@/lib/validation/admin";
 import { notifyTripRiders, tripVars } from "../../_shared/notify";
 
 export const dynamic = "force-dynamic";
+
+function fieldError(field: string, message: string): ApiError {
+  return new ApiError(400, "VALIDATION", "Please check the form.", { fieldErrors: { [field]: [message] } });
+}
 
 /** GET /api/admin/trips/:id — trip + bookings with rider details. */
 export const GET = withHandler<RouteCtx<{ id: string }>>(async (_request, ctx) => {
@@ -23,7 +27,11 @@ export const GET = withHandler<RouteCtx<{ id: string }>>(async (_request, ctx) =
 /**
  * PATCH /api/admin/trips/:id — edit a trip (tripPatchSchema).
  * - seat_capacity up → promote_waitlist, promoted riders get booking_promoted
- * - departure_at change → reminder times recomputed, active riders get trip_updated
+ * - departure_at change → reminder times recomputed (sent flags cleared so the tick, whose
+ *   dedupe keys carry the departure epoch, fires again for the new time); active riders and
+ *   the trip's driver(s) get trip_updated. A schedule-linked trip keeps its service_date
+ *   (its (schedule_time_id, service_date) slot is unique: add an extra trip for another day);
+ *   ad-hoc trips may move to another date.
  */
 export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) => {
   await requireRole("admin");
@@ -42,9 +50,7 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
 
   if (input.driver_id) {
     const { data: driver } = await admin.from("profiles").select("id, role, is_active").eq("id", input.driver_id).maybeSingle();
-    if (!driver || !driver.is_active || driver.role === "student") {
-      throw new ApiError(400, "VALIDATION", "Please check the form.", { fieldErrors: { driver_id: ["Pick an active driver"] } });
-    }
+    if (!driver || !driver.is_active || driver.role === "student") throw fieldError("driver_id", "Pick an active driver");
   }
 
   const patch: TablesUpdate<"trips"> = {};
@@ -57,12 +63,14 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
   const timeChanged = input.departure_at !== undefined && new Date(input.departure_at).getTime() !== new Date(before.departure_at).getTime();
   if (timeChanged && input.departure_at) {
     const departure = new Date(input.departure_at);
-    if (departure.getTime() < Date.now() - 60_000) {
-      throw new ApiError(400, "VALIDATION", "Please check the form.", { fieldErrors: { departure_at: ["That time is in the past"] } });
+    if (departure.getTime() < Date.now() - 60_000) throw fieldError("departure_at", "That time is in the past");
+    const serviceDate = localDateString(departure, settings.timezone);
+    if (before.schedule_time_id && serviceDate !== before.service_date) {
+      throw fieldError("departure_at", "Change the time only; add an extra trip for another day");
     }
     const reminderAt = new Date(departure.getTime() - settings.reminder_lead_minutes * 60_000);
     patch.departure_at = departure.toISOString();
-    patch.service_date = localDateString(departure, settings.timezone);
+    patch.service_date = serviceDate;
     patch.reminder_at = reminderAt.toISOString();
     // Let the reminder / nudge / manifest fire again for the new time when it is still ahead.
     if (reminderAt.getTime() > Date.now()) patch.reminder_sent_at = null;
@@ -71,6 +79,7 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
   }
 
   const { data: trip, error } = await admin.from("trips").update(patch).eq("id", id).select("*").single();
+  if (error?.code === "23505") throw fieldError("departure_at", "A trip for that departure already exists on that day");
   if (error || !trip) throw fromPostgresError(error);
 
   let promoted = 0;
@@ -101,12 +110,28 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
   }
 
   let notified = 0;
+  let driversNotified = 0;
   if (timeChanged) {
+    const now = new Date();
+    const sameDay = trip.service_date === before.service_date;
+    const fmt = (at: string) => (sameDay ? formatTime(at, settings.timezone) : formatDayTime(at, now, settings.timezone));
+    const message = `New time: ${fmt(trip.departure_at)} (was ${fmt(before.departure_at)}).`;
+    const stamp = Date.parse(trip.departure_at);
     notified = await notifyTripRiders(admin, trip, settings, "trip_updated", {
-      message: `New time: ${formatTime(trip.departure_at, settings.timezone)} (was ${formatTime(before.departure_at, settings.timezone)}).`,
-      dedupePrefix: `trip_updated:${trip.id}:${Date.parse(trip.departure_at)}`,
+      message,
+      dedupePrefix: `trip_updated:${trip.id}:${stamp}`,
+    });
+    // The driver plans around the departure too (and any manifest already sent is now stale).
+    driversNotified = await notifyAndDrain(admin, {
+      userIds: await listDriverIds(admin, trip.driver_id),
+      kind: "trip_updated",
+      vars: { ...tripVars(trip, settings), message },
+      url: `/driver/trips/${trip.id}`,
+      dedupePrefix: `trip_updated_driver:${trip.id}:${stamp}`,
+      urgency: "high",
+      collapseTag: `manifest:${trip.id}`,
     });
   }
 
-  return ok({ trip, promoted, notified });
+  return ok({ trip, promoted, notified, drivers_notified: driversNotified });
 });

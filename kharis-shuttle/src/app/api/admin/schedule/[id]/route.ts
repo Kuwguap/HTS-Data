@@ -11,8 +11,15 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
   await requireRole("admin");
   const { id } = await ctx.params;
   const input = await parseBody(request, scheduleTimePatchSchema);
-  const patch: TablesUpdate<"schedule_times"> = { ...input };
-  if (input.days_of_week) patch.days_of_week = [...new Set(input.days_of_week)].sort((a, b) => a - b);
+  // Forward only the keys the body carried: an absent key must never reset its column.
+  const patch: TablesUpdate<"schedule_times"> = {};
+  if (input.direction !== undefined) patch.direction = input.direction;
+  if (input.depart_time !== undefined) patch.depart_time = input.depart_time;
+  if (input.days_of_week !== undefined) patch.days_of_week = [...new Set(input.days_of_week)].sort((a, b) => a - b);
+  if (input.label !== undefined) patch.label = input.label;
+  if (input.seat_capacity !== undefined) patch.seat_capacity = input.seat_capacity;
+  if (input.bookings_enabled !== undefined) patch.bookings_enabled = input.bookings_enabled;
+  if (input.is_active !== undefined) patch.is_active = input.is_active;
   if (Object.keys(patch).length === 0) throw new ApiError(400, "VALIDATION", "Nothing to change.");
 
   const admin = createAdminClient();

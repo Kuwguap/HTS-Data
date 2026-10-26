@@ -39,7 +39,7 @@ const TICK_ROW = {
   note: null,
 };
 
-const DRAIN = { claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1, requeued: 0, deliveries: 11, batches: 2, durationMs: 300, rows: [] };
+const DRAIN = { claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1, requeued: 0, reserved: 0, deliveries: 11, batches: 2, durationMs: 300, rows: [] };
 
 function request(method: string, authorization?: string, body?: string, contentType = "application/json") {
   return new Request("http://localhost:3100/api/cron/tick", {
@@ -114,8 +114,9 @@ describe("POST /api/cron/tick", () => {
     expect(body.tick_ran).toBe(true);
     expect(body.source).toBeNull();
     expect(body.tick).toEqual(TICK_ROW);
-    expect(body.push).toMatchObject({ claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1 });
+    expect(body.push).toMatchObject({ claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1, reserved: 0 });
     expect(body.push.rows).toBeUndefined();
+    expect(body.push_skipped_reason).toBeNull();
   });
 
   it("computes the drain budget from the time run_tick used", async () => {
@@ -131,15 +132,33 @@ describe("POST /api/cron/tick", () => {
     expect((await res.json()).durationMs).toBe(7_000);
   });
 
-  it("never passes a negative budget when the tick ate the whole window", async () => {
+  it("skips the drain entirely when the tick ate the whole window (nothing claimed, push: null + reason)", async () => {
     let t = 1_000_000;
     vi.spyOn(Date, "now").mockImplementation(() => t);
     rpc.mockImplementation(async () => {
       t += maxDuration * 1000;
       return { data: TICK_ROW, error: null };
     });
+    const res = await POST(request("POST", `Bearer ${SECRET}`), ctx);
+    expect(res.status).toBe(200);
+    expect(drainOutbox).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.tick).toEqual(TICK_ROW);
+    expect(body.push).toBeNull();
+    expect(body.push_skipped_reason).toMatch(/no time left/);
+  });
+
+  it("still drains with the little time that is left when the tick was merely slow", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    rpc.mockImplementation(async () => {
+      t += FULL_BUDGET_MS - 1;
+      return { data: TICK_ROW, error: null };
+    });
     await POST(request("POST", `Bearer ${SECRET}`), ctx);
-    expect(drainOutbox.mock.calls[0]![0].budgetMs).toBe(0);
+    expect(drainOutbox).toHaveBeenCalledTimes(1);
+    expect(drainOutbox.mock.calls[0]![0].budgetMs).toBe(1);
   });
 
   it("skips run_tick when pg_cron says it already ran it, and still drains", async () => {

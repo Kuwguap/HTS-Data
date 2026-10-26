@@ -4,7 +4,7 @@ import { Page } from "@/components/layout/Page";
 import { TickButton } from "@/components/admin/TickButton";
 import { Art, Banner, Caption, Empty, List, Pill, Row, StatTile } from "@/components/ui";
 import { getAuthContext } from "@/lib/auth/require";
-import { overview } from "@/lib/data/admin";
+import { isManualTick, overview } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import { formatAgo, formatShortDate, formatTime } from "@/lib/time";
 import { directionShort, TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips";
@@ -19,9 +19,9 @@ export default async function AdminOverviewPage() {
   const tickValue = tick.last ? (tick.ok ? "ok" : "⚠️") : "—";
   const tickLabel = tick.last
     ? tick.ok
-      ? `Tick · ${formatAgo(tick.last.ran_at, now)}`
-      : `No tick for ${tickAgeMin} min`
-    : "No tick yet";
+      ? `Last automatic tick · ${formatAgo(tick.last.ran_at, now)}`
+      : `No automatic tick for ${tickAgeMin} min`
+    : "No automatic tick yet";
   const firstName = ctx?.profile.full_name.split(" ")[0] ?? "";
 
   return (
@@ -30,8 +30,8 @@ export default async function AdminOverviewPage() {
 
       {!tick.ok ? (
         <Banner tone="red" icon="⚠️">
-          {tick.last ? `The minute tick has not run for ${tickAgeMin} min.` : "The minute tick has never run."} Trips, reminders and pushes
-          depend on it. In Supabase enable <strong>pg_cron</strong> + <strong>pg_net</strong>, apply <code>0009_cron.sql</code> and store{" "}
+          {tick.last ? `The automatic minute tick has not run for ${tickAgeMin} min.` : "The automatic minute tick has never run."} Trips,
+          reminders and pushes depend on it (&ldquo;Run tick now&rdquo; helps once, but does not count here). In Supabase enable <strong>pg_cron</strong> + <strong>pg_net</strong>, apply <code>0009_cron.sql</code> and store{" "}
           <code>tick_url</code> / <code>cron_secret</code> in Vault (see supabase/README.md). As a backup, point cron-job.org at{" "}
           <code>POST /api/cron/tick</code> with the bearer secret every minute.
         </Banner>
@@ -86,7 +86,7 @@ export default async function AdminOverviewPage() {
               key={r.id}
               title={`${formatTime(r.ran_at, settings.timezone)} · ${formatAgo(r.ran_at, now)}`}
               subtitle={`${r.trips_created} trips · ${r.reminders_enqueued} reminders · ${r.nudges_enqueued} nudges · ${r.manifests_enqueued} manifests · ${r.duration_ms ?? 0} ms${r.note ? ` · ${r.note}` : ""}`}
-              trailing={r.note ? <Pill tone="amber" sm>Note</Pill> : <Pill tone="green" sm>OK</Pill>}
+              trailing={isManualTick(r) ? <Pill tone="blue" sm>Manual</Pill> : r.note ? <Pill tone="amber" sm>Note</Pill> : <Pill tone="green" sm>OK</Pill>}
             />
           ))
         )}

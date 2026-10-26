@@ -74,6 +74,7 @@ export const POST = withHandler(async () => {
           skipped: push.skipped,
           gone: push.gone,
           requeued: push.requeued,
+          reserved: push.reserved,
           deliveries: push.deliveries,
         }
       : null,

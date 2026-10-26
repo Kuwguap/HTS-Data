@@ -6,7 +6,8 @@ vi.hoisted(() => {
   process.env.NEXT_PUBLIC_APP_URL = "https://shuttle.example.com/";
 });
 
-import { MAX_PAYLOAD_BYTES, buildPayload, serializePayload, toSameOriginPath, truncateEscaped } from "@/lib/push/payload";
+import { APP_NAME } from "@/lib/constants";
+import { MAX_PAYLOAD_BYTES, MAX_TAG_BYTES, MAX_TITLE_BYTES, buildPayload, serializePayload, toSameOriginPath, truncateEscaped } from "@/lib/push/payload";
 
 const SW_LOGIC = path.resolve(__dirname, "../../src/lib/push/sw-logic.ts");
 const hasSwLogic = existsSync(SW_LOGIC);
@@ -50,7 +51,7 @@ describe("buildPayload", () => {
     expect("icon" in buildPayload(row)).toBe(false);
   });
   it("defaults an empty title", () => {
-    expect(buildPayload({ ...row, title: "  " }).title).toBe("Kharis Shuttle");
+    expect(buildPayload({ ...row, title: "  " }).title).toBe(APP_NAME);
   });
 });
 
@@ -67,6 +68,58 @@ describe("3 KB guard", () => {
     const p = buildPayload({ ...row, title: "x".repeat(10_000), body: "y".repeat(10_000) });
     expect(Buffer.byteLength(JSON.stringify(p), "utf8")).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
     expect(p.title.length).toBeLessThan(10_000);
+  });
+
+  describe("shrink order: the body is never sacrificed for an oversized short field", () => {
+    const wireBytes = (p: unknown) => Buffer.byteLength(JSON.stringify(p), "utf8");
+
+    it("an oversized title is capped and the body kept whole", () => {
+      const p = buildPayload({ ...row, title: "T".repeat(10_000) });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.body).toBe(row.body);
+      expect(p.title.endsWith("…")).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(p.title), "utf8") - 2).toBeLessThanOrEqual(MAX_TITLE_BYTES);
+    });
+
+    it("an oversized tag is capped and the body kept whole", () => {
+      const p = buildPayload({ ...row, collapse_tag: "g".repeat(10_000) });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.body).toBe(row.body);
+      expect(Buffer.byteLength(JSON.stringify(p.tag), "utf8") - 2).toBeLessThanOrEqual(MAX_TAG_BYTES);
+    });
+
+    it("an oversized icon is dropped and the body kept whole", () => {
+      const p = buildPayload({ ...row, icon: `/icons/${"i".repeat(5_000)}.png` });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.icon).toBeUndefined();
+      expect(p.body).toBe(row.body);
+      expect(p.title).toBe(row.title);
+    });
+
+    it("an oversized url falls back to /app and the body is kept whole", () => {
+      const p = buildPayload({ ...row, url: `/app/${"u".repeat(5_000)}` });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.url).toBe("/app");
+      expect(p.body).toBe(row.body);
+    });
+
+    it("a long title and a long body share the room: title capped, body gets the rest", () => {
+      const p = buildPayload({ ...row, title: "T".repeat(10_000), body: "b".repeat(10_000) });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(wireBytes(p)).toBeGreaterThan(MAX_PAYLOAD_BYTES - 8);
+      expect(Buffer.byteLength(JSON.stringify(p.title), "utf8") - 2).toBeLessThanOrEqual(MAX_TITLE_BYTES);
+      expect(p.body.length).toBeGreaterThan(2_000);
+      expect(p.body.endsWith("…")).toBe(true);
+      expect((p.body.match(/…/g) ?? []).length).toBe(1); // re-fitted from the original, never double-cut
+    });
+
+    it("sane rows are untouched by the caps", () => {
+      expect(buildPayload({ ...row, title: "Shuttle at 7:30 AM — 3 seats left, GH₵10 cash", collapse_tag: "trip:abc:reminder" })).toMatchObject({
+        title: "Shuttle at 7:30 AM — 3 seats left, GH₵10 cash",
+        tag: "trip:abc:reminder",
+        body: row.body,
+      });
+    });
   });
   it("serializePayload squeezes a hand-built payload", () => {
     const json = serializePayload({ ...buildPayload(row), body: "z".repeat(10_000) });

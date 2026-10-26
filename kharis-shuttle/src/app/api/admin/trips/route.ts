@@ -26,8 +26,15 @@ export const GET = withHandler(async (request) => {
 /**
  * POST /api/admin/trips — create an extra (ad-hoc) trip (adhocTripSchema) via
  * create_adhoc_trip. With `notify: true`, students with reminders on get a
- * return_announcement (to hostel) or trip_reminder (to campus) push.
+ * return_announcement (to hostel) or trip_reminder (to campus) push. A to-campus
+ * reminder sent this early uses the tick's own dedupe prefix
+ * ('reminder:<trip_id>:<departure epoch seconds>', see run_tick) so the tick does
+ * not send a second one when reminder_at comes round.
  */
+function reminderDedupePrefix(trip: { id: string; departure_at: string }): string {
+  return `reminder:${trip.id}:${Math.round(Date.parse(trip.departure_at) / 1000)}`;
+}
+
 export const POST = withHandler(async (request) => {
   const { user } = await requireRole("admin");
   const input = await parseBody(request, adhocTripSchema);
@@ -49,12 +56,15 @@ export const POST = withHandler(async (request) => {
   if (input.notify) {
     const ids = await listActiveStudentIds(admin, { remindersOnly: true });
     const leavingIn = Math.max(0, minutesBetween(new Date(), trip.departure_at));
+    const isReminder = trip.direction !== "to_hostel";
+    // create_adhoc_trip only schedules a tick reminder (reminder_at) when the lead has not passed yet.
+    const tickWillRemind = isReminder && trip.reminder_at != null && leavingIn > settings.reminder_lead_minutes;
     notified = await notifyAndDrain(admin, {
       userIds: ids,
-      kind: trip.direction === "to_hostel" ? "return_announcement" : "trip_reminder",
+      kind: isReminder ? "trip_reminder" : "return_announcement",
       vars: { ...tripVars(trip, settings), count: leavingIn },
       url: `/app/trips/${trip.id}`,
-      dedupePrefix: `adhoc:${trip.id}`,
+      dedupePrefix: tickWillRemind ? reminderDedupePrefix(trip) : `adhoc:${trip.id}`,
       ttlSeconds: Math.max(300, leavingIn * 60),
       urgency: "high",
       collapseTag: `trip:${trip.id}`,
