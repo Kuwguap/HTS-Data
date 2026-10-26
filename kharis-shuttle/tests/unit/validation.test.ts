@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loginSchema, registerSchema, changePinSchema } from "@/lib/validation/auth";
+import { loginSchema, registerSchema, changePinSchema, updateProfileSchema } from "@/lib/validation/auth";
 import { createBookingSchema, createPickupRequestSchema, respondPickupRequestSchema } from "@/lib/validation/bookings";
 import { announceTripSchema, locationBatchSchema } from "@/lib/validation/driver";
 import { pushSubscribeSchema } from "@/lib/validation/push";
@@ -26,8 +26,17 @@ describe("registerSchema", () => {
       expect(r.data.full_name).toBe("Abena Mensah");
       expect(r.data.phone).toBeNull();
       expect(r.data.room).toBe("B12");
-      expect(r.data.signup_code).toBeNull();
+      // Omitted optional text stays omitted (PATCH bodies must not null other columns).
+      expect(r.data.signup_code).toBeUndefined();
+      expect("signup_code" in r.data).toBe(false);
     }
+  });
+  it("optionalText leaves omitted keys out of PATCH bodies (reminders switch must not erase phone/room)", () => {
+    const r = updateProfileSchema.parse({ reminders_enabled: true });
+    expect(Object.keys(r)).toEqual(["reminders_enabled"]);
+    const cleared = updateProfileSchema.parse({ phone: "", room: null });
+    expect(cleared.phone).toBeNull();
+    expect(cleared.room).toBeNull();
   });
   it("rejects bad usernames, names and PINs", () => {
     const r = registerSchema.safeParse({ username: "ab", full_name: "A", pin: "12" });
@@ -111,7 +120,7 @@ describe("announceTripSchema", () => {
     if (r.success) {
       expect(r.data.direction).toBe("to_hostel");
       expect(r.data.leaving_in_minutes).toBe(10);
-      expect(r.data.message).toBeNull();
+      expect(r.data.message).toBeUndefined();
     }
   });
   it("requires an origin and bounds the lead time", () => {

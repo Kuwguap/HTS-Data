@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { PIN_RE, USERNAME_RE } from "@/lib/auth/pin";
-import { optionalText } from "./common";
+import { PIN_RE, USERNAME_RE, optionalText } from "./common";
 
 export const usernameSchema = z
   .string()

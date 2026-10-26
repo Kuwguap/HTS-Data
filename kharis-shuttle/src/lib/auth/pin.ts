@@ -1,7 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { PIN_RE, USERNAME_RE } from "@/lib/validation/common";
 
-export const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
-export const PIN_RE = /^\d{4,6}$/;
+// Server-only module (node:crypto). Client components import the regexes from
+// @/lib/validation/common instead.
+export { PIN_RE, USERNAME_RE };
 export const SYNTHETIC_EMAIL_DOMAIN = "users.shuttle-me.local";
 
 export function normalizeUsername(raw: string): string {

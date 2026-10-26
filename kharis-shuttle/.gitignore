@@ -27,3 +27,6 @@ assets/icon-sources/*.png
 
 # visual verification screenshots
 .ui-shots/
+
+# orchestration scripts (session scratch)
+.workflows/

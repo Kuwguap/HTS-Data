@@ -4,7 +4,9 @@ import { isoDate, isoDateTime, lat, lng, optionalText, shortText, timeOfDay, tri
 export const settingsSchema = z.object({
   hostel_name: shortText(80).min(2),
   campus_name: shortText(80).min(1),
-  timezone: shortText(60).min(1),
+  timezone: shortText(60)
+    .min(1)
+    .refine((tz) => isValidTimeZone(tz), { message: "Not a valid time zone (e.g. Africa/Accra)." }),
   fare_pesewas: z.number().int().min(0).max(1_000_000),
   currency: shortText(8).min(1),
   payment_note: shortText(200),
@@ -24,29 +26,59 @@ export const settingsSchema = z.object({
 export type SettingsInput = z.infer<typeof settingsSchema>;
 export const settingsPatchSchema = settingsSchema.partial();
 
-export const scheduleTimeSchema = z.object({
+// Patch schemas are built from default-free shapes: zod 4's `.partial()` still applies
+// `.default()` values, which would turn `{ is_active: false }` into a reset of other columns.
+const scheduleTimeShape = {
   direction: tripDirection,
   depart_time: timeOfDay,
   days_of_week: z.array(z.number().int().min(1).max(7)).min(1).max(7),
   label: optionalText(60),
   seat_capacity: z.number().int().min(1).max(100).optional().nullable(),
+  bookings_enabled: z.boolean(),
+  is_active: z.boolean(),
+};
+export const scheduleTimeSchema = z.object({
+  ...scheduleTimeShape,
   bookings_enabled: z.boolean().default(true),
   is_active: z.boolean().default(true),
 });
 export type ScheduleTimeInput = z.infer<typeof scheduleTimeSchema>;
-export const scheduleTimePatchSchema = scheduleTimeSchema.partial();
+export const scheduleTimePatchSchema = z
+  .object(scheduleTimeShape)
+  .partial()
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "Nothing to update." });
+export type ScheduleTimePatchInput = z.infer<typeof scheduleTimePatchSchema>;
 
-export const pickupLocationSchema = z.object({
+const pickupLocationShape = {
   name: shortText(80).min(1),
   description: optionalText(200),
   direction: tripDirection.optional().nullable(),
   lat,
   lng,
+  sort_order: z.number().int().min(0).max(1000),
+  is_active: z.boolean(),
+};
+export const pickupLocationSchema = z.object({
+  ...pickupLocationShape,
   sort_order: z.number().int().min(0).max(1000).default(0),
   is_active: z.boolean().default(true),
 });
 export type PickupLocationInput = z.infer<typeof pickupLocationSchema>;
-export const pickupLocationPatchSchema = pickupLocationSchema.partial();
+export const pickupLocationPatchSchema = z
+  .object(pickupLocationShape)
+  .partial()
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "Nothing to update." });
+export type PickupLocationPatchInput = z.infer<typeof pickupLocationPatchSchema>;
+
+/** IANA zone check used by the settings route. */
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const dayOffSchema = z.object({
   service_date: isoDate,

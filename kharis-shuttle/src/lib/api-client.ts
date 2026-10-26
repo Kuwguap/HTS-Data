@@ -48,8 +48,13 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
 
   if (!res.ok) {
     const err = (json as ApiErrorBody | null)?.error;
-    if (res.status === 401 && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      // Session gone: send them to log in, remembering where they were.
+    if (
+      res.status === 401 &&
+      err?.code === "UNAUTHENTICATED" &&
+      typeof window !== "undefined" &&
+      !window.location.pathname.startsWith("/login")
+    ) {
+      // Session gone (not a wrong PIN): send them to log in, remembering where they were.
       const next = encodeURIComponent(window.location.pathname + window.location.search);
       window.location.assign(`/login?next=${next}`);
     }
