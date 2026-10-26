@@ -1,8 +1,8 @@
 {
-  "name": "kharis-shuttle",
+  "name": "shuttle-me",
   "version": "0.1.0",
   "private": true,
-  "description": "Kharis Courts Hostel shuttle — PWA for seat reservations, reminders and live bus tracking",
+  "description": "Shuttle Me — Kharis Courts Hostel shuttle PWA for seat reservations, reminders and live bus tracking",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

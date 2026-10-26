@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 export const PIN_RE = /^\d{4,6}$/;
-export const SYNTHETIC_EMAIL_DOMAIN = "users.kharis-shuttle.local";
+export const SYNTHETIC_EMAIL_DOMAIN = "users.shuttle-me.local";
 
 export function normalizeUsername(raw: string): string {
   return raw.trim().toLowerCase();

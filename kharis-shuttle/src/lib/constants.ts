@@ -1,5 +1,5 @@
-export const APP_NAME = "Kharis Shuttle";
-export const APP_SHORT_NAME = "Shuttle";
+export const APP_NAME = "Shuttle Me";
+export const APP_SHORT_NAME = "Shuttle Me";
 export const APP_DESCRIPTION = "Reserve a seat, get reminders and track the Kharis Courts Hostel shuttle live.";
 export const THEME_COLOR = "#0070dd";
 export const BACKGROUND_COLOR = "#f2f2f7";
