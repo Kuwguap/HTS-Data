@@ -7,8 +7,14 @@ import { notifyPermissionChanged, useStandalone } from "./useStandalone";
 
 export type PushStatus = "unsupported" | "needs-install" | "denied" | "off" | "on" | "working";
 
-/** Outcome of subscribe / unsubscribe / sendTest. `error` is sentence case, no emoji, for a toast. */
-export type PushResult = { ok: boolean; error: string | null };
+/**
+ * Outcome of subscribe / unsubscribe / sendTest. `error` is sentence case, no emoji, for a toast.
+ * `delivered` is only set by sendTest: how many devices accepted the test push.
+ */
+export type PushResult = { ok: boolean; error: string | null; delivered?: number };
+
+/** The parts of the POST /api/push/test body the hook reads. */
+type PushTestResponse = { sent?: boolean; delivered?: number; devices?: number; pruned?: number };
 
 export type PushSubscriptionState = {
   status: PushStatus;
@@ -132,9 +138,11 @@ export function usePushSubscription(): PushSubscriptionState {
       const reg = await navigator.serviceWorker.getRegistration("/");
       const sub = await reg?.pushManager.getSubscription();
       if (sub) {
-        await deleteSubscription(sub.endpoint).catch(() => 0);
+        // Browser first: if this fails the device still holds a live subscription,
+        // so the server row must stay (status remains "on").
         const gone = await sub.unsubscribe().catch(() => false);
         if (!gone) return finish(fail("Could not turn off reminders. Try again."));
+        await deleteSubscription(sub.endpoint).catch(() => 0);
       }
       setEndpoint(null);
       return finish(OK);
@@ -146,14 +154,32 @@ export function usePushSubscription(): PushSubscriptionState {
   }, [finish]);
 
   const sendTest = useCallback(async (): Promise<PushResult> => {
+    let res: Response;
     try {
-      const res = await fetch("/api/push/test", { method: "POST", credentials: "include" });
-      if (res.ok) return finish(OK);
-      if (res.status === 401) return finish(fail("Please log in first."));
-      return finish(fail("Could not send a test. Try again."));
+      res = await fetch("/api/push/test", { method: "POST", credentials: "include" });
     } catch {
       return finish(fail("Could not send a test. Check your connection."));
     }
+    if (!res.ok) {
+      if (res.status === 401) return finish(fail("Please log in first."));
+      return finish(fail("Could not send a test. Try again."));
+    }
+    // 200 only means the request ran: the body says whether any device got it.
+    let body: PushTestResponse = {};
+    try {
+      body = ((await res.json()) ?? {}) as PushTestResponse;
+    } catch {
+      body = {};
+    }
+    const delivered = typeof body.delivered === "number" ? body.delivered : 0;
+    const devices = typeof body.devices === "number" ? body.devices : 0;
+    const pruned = typeof body.pruned === "number" ? body.pruned : 0;
+    if (body.sent !== true || delivered <= 0) {
+      if (devices === 0 && pruned > 0) return finish(fail("Your old subscription expired — turn on reminders again."));
+      if (devices === 0) return finish(fail("No device is subscribed yet — turn on reminders first."));
+      return finish(fail("Could not deliver the test. Try again in a moment."));
+    }
+    return finish({ ok: true, error: null, delivered });
   }, [finish]);
 
   let status: PushStatus;

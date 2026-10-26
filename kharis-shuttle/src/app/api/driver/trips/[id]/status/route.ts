@@ -66,7 +66,7 @@ export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, { para
           vars: { ...vars, message: input.reason ?? "" },
           url: `/app/trips/${trip.id}`,
           // Same prefix as the admin cancel / day-off routes: one cancellation notice per rider per trip.
-          dedupePrefix: `trip_cancelled:${trip.id}`,
+          dedupePrefix: `trip_cancelled:${trip.id}:${Date.now()}`,
           ttlSeconds: 3600,
           urgency: "high",
           collapseTag: `trip:${trip.id}`,

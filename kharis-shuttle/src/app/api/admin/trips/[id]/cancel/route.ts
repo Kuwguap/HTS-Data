@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/admin/trips/:id/cancel — cancel a trip with a reason (tripCancelSchema);
  * confirmed + waitlisted + boarded riders get trip_cancelled. A trip that is already
- * cancelled answers 409 and nobody is notified again (the `trip_cancelled:<trip_id>`
+ * cancelled answers 409 and nobody is notified again (the per-cancellation `trip_cancelled:<trip_id>:<stamp>`
  * dedupe prefix is shared with the driver and day-off routes as a second guard).
  */
 export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) => {
@@ -35,7 +35,7 @@ export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) =
 
   const notified = await notifyTripRiders(admin, trip, settings, "trip_cancelled", {
     message: input.reason,
-    dedupePrefix: `trip_cancelled:${trip.id}`,
+    dedupePrefix: `trip_cancelled:${trip.id}:${Date.now()}`,
     statuses: ["confirmed", "waitlisted", "boarded"],
   });
   return ok({ trip, notified });

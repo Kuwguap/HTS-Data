@@ -116,7 +116,7 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
     const sameDay = trip.service_date === before.service_date;
     const fmt = (at: string) => (sameDay ? formatTime(at, settings.timezone) : formatDayTime(at, now, settings.timezone));
     const message = `New time: ${fmt(trip.departure_at)} (was ${fmt(before.departure_at)}).`;
-    const stamp = Date.parse(trip.departure_at);
+    const stamp = Date.now(); // per-change stamp so flip-flopping times still notify
     notified = await notifyTripRiders(admin, trip, settings, "trip_updated", {
       message,
       dedupePrefix: `trip_updated:${trip.id}:${stamp}`,

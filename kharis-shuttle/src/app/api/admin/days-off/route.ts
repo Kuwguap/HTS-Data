@@ -64,7 +64,7 @@ export const POST = withHandler(async (request) => {
     cancelled++;
     notified += await notifyTripRiders(admin, updated, settings, "trip_cancelled", {
       message: reason,
-      dedupePrefix: `trip_cancelled:${trip.id}`,
+      dedupePrefix: `trip_cancelled:${trip.id}:${Date.now()}`,
     });
   }
 
