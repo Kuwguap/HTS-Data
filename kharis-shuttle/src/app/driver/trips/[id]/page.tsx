@@ -4,6 +4,7 @@ import { requirePageAuth } from "@/lib/auth/page";
 import { getManifest } from "@/lib/data/driver";
 import { getSettings } from "@/lib/data/settings";
 import { formatAgo, formatDayTime, formatTime } from "@/lib/time";
+import { TRIP_LOCATION_COLUMNS } from "@/lib/tracking/columns";
 import { TRIP_STATUS_LABEL, TRIP_STATUS_TONE, directionLabel, isTripActive, isTripLive } from "@/lib/trips";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Page } from "@/components/layout/Page";
@@ -40,7 +41,8 @@ export default async function DriverManifestPage({ params }: { params: Promise<{
       />
       <LiveRefresh table="bookings" filter={`trip_id=eq.${trip.id}`} />
       <LiveRefresh table="pickup_requests" />
-      <LiveRefresh table="trips" filter={`id=eq.${trip.id}`} event="UPDATE" />
+      {/* GPS fixes rewrite trips.last_* every 15 s; the manifest only cares about status/seat changes. */}
+      <LiveRefresh table="trips" filter={`id=eq.${trip.id}`} event="UPDATE" ignoreColumns={TRIP_LOCATION_COLUMNS} />
 
       <List>
         <Row label="Departure" value={formatDayTime(trip.departure_at, new Date(), settings.timezone)} />

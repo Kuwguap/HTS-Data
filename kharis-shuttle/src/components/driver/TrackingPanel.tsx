@@ -6,6 +6,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { api } from "@/lib/api-client";
 import type { PickupLocation, PickupRequest, Trip } from "@/lib/db.types";
 import { formatAgo, formatTime } from "@/lib/time";
+import { TRIP_LOCATION_COLUMNS } from "@/lib/tracking/columns";
 import { TRIP_STATUS_LABEL, TRIP_STATUS_TONE, directionLabel } from "@/lib/trips";
 import { createClient } from "@/lib/supabase/client";
 import { useDriverTracking } from "@/hooks/useDriverTracking";
@@ -44,7 +45,8 @@ export function TrackingPanel({ trip, pickupLocations, settings }: TrackingPanel
   const finished = trip.status === "arrived" || trip.status === "cancelled" || trip.status === "expired";
 
   // Keep the trip row fresh (status changed from elsewhere, e.g. the manifest page or admin).
-  useRealtimeInvalidate({ table: "trips", filter: `id=eq.${trip.id}`, event: "UPDATE" });
+  // The map preview follows last_* on its own, so our own GPS fixes must not refresh the page.
+  useRealtimeInvalidate({ table: "trips", filter: `id=eq.${trip.id}`, event: "UPDATE", ignoreColumns: TRIP_LOCATION_COLUMNS });
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);

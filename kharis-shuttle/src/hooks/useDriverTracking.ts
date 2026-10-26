@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TRACKING_DEFAULTS, shouldSendFix, type Fix } from "@/lib/geo";
+import { createFixQueue, type FixQueue, type FixQueueStats } from "@/lib/tracking/fix-queue";
 
 export type TrackingStatus = "idle" | "tracking" | "paused" | "stopped" | "error";
 export type WakeLockStatus = "unsupported" | "active" | "released";
@@ -30,10 +31,12 @@ export type DriverTrackingState = {
 
 type OutPoint = { lat: number; lng: number; accuracy: number | null; heading: number | null; speed: number | null; at: string };
 
-const BATCH = 10;
-const QUEUE_CAP = 50;
 const WATCH_OPTIONS: PositionOptions = { enableHighAccuracy: true, maximumAge: 0, timeout: 15_000 };
-const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
+const HEARTBEAT_TICK_MS = 5_000;
+/** A fix older than this is not re-stamped as a heartbeat (the stale UI takes over). */
+const HEARTBEAT_MAX_FIX_AGE_MS = 2 * TRACKING_DEFAULTS.heartbeatMs;
+/** Thrown by send() when the server refused the trip: the queue must not retry. */
+class RefusedError extends Error {}
 
 type WakeLockSentinelLike = { release: () => Promise<void>; addEventListener: (t: "release", cb: () => void) => void };
 type NavigatorWithWakeLock = Navigator & { wakeLock?: { request: (type: "screen") => Promise<WakeLockSentinelLike> } };
@@ -52,9 +55,11 @@ function toOut(f: Fix): OutPoint {
 /**
  * Driver-side GPS sharing for one trip. `watchPosition` from a tap, fixes
  * filtered with `shouldSendFix` (accuracy ≤ 100 m, ≥ 15 m moved or ≥ 10 s,
- * ≥ 3 s apart), 30 s heartbeat while stationary, batches of ≤ 10 points to
- * `POST /api/driver/location`, retry queue with backoff (cap 50), `sendBeacon`
- * on pagehide, Screen Wake Lock (re-requested on visible), paused flag when the
+ * ≥ 3 s apart), 30 s heartbeat while stationary (only while the last real fix is
+ * fresh), batches of ≤ 10 points to `POST /api/driver/location` through a
+ * `createFixQueue` (first fix + heartbeats go out at once, the rest when ≥ 5 are
+ * waiting or 8 s after the oldest; retry with backoff; cap 50), `sendBeacon` on
+ * pagehide, Screen Wake Lock (re-requested on visible), paused flag when the
  * page was hidden.
  */
 export function useDriverTracking(tripId: string): DriverTrackingState {
@@ -68,53 +73,34 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
   const [queued, setQueued] = useState(0);
 
   const watchId = useRef<number | null>(null);
-  const queue = useRef<OutPoint[]>([]);
   const lastFix = useRef<Fix | null>(null);
   const lastSent = useRef<Fix | null>(null);
-  const flushing = useRef(false);
-  const failures = useRef(0);
-  const retryTimer = useRef<number | null>(null);
   const heartbeat = useRef<number | null>(null);
   const sentinel = useRef<WakeLockSentinelLike | null>(null);
   const active = useRef(false);
-  // Lets flush() chain the next batch without referring to itself.
-  const flushRef = useRef<() => Promise<void>>(async () => undefined);
+  const queue = useRef<FixQueue<OutPoint> | null>(null);
+  const queueTripId = useRef<string | null>(null);
 
-  const setQueueLen = () => setQueued(queue.current.length);
-
-  const enqueue = useCallback((f: Fix) => {
-    queue.current.push(toOut(f));
-    if (queue.current.length > QUEUE_CAP) queue.current.splice(0, queue.current.length - QUEUE_CAP);
-    lastSent.current = f;
-    setQueueLen();
+  const onStats = useCallback((s: FixQueueStats) => {
+    setQueued(s.queued);
+    setSentCount(s.sent);
+    setLastSentAt(s.lastSentAt);
+    if (s.failures > 2) setError("No connection — points are queued and will be sent when you’re back online.");
+    else if (s.failures === 0 && s.lastSentAt != null) setError((e) => (e && e.startsWith("No connection") ? null : e));
   }, []);
 
-  const flush = useCallback(async () => {
-    if (flushing.current || queue.current.length === 0) return;
-    flushing.current = true;
-    const batch = queue.current.slice(0, BATCH);
-    try {
+  const send = useCallback(
+    async (points: OutPoint[]) => {
       const res = await fetch("/api/driver/location", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         cache: "no-store",
         keepalive: true,
-        body: JSON.stringify({ trip_id: tripId, points: batch }),
+        body: JSON.stringify({ trip_id: tripId, points }),
       });
-      if (res.ok) {
-        queue.current.splice(0, batch.length);
-        failures.current = 0;
-        setSentCount((n) => n + batch.length);
-        setLastSentAt(Date.now());
-        setError(null);
-        setQueueLen();
-        flushing.current = false;
-        if (queue.current.length > 0) void flushRef.current();
-        return;
-      }
+      if (res.ok) return;
       if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 409) {
-        // Not allowed any more (trip ended / not ours): stop sending, keep the UI honest.
         let message = "Tracking was refused for this trip.";
         try {
           const body = (await res.json()) as { error?: { message?: string } };
@@ -122,44 +108,52 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
         } catch {
           // keep default
         }
-        queue.current = [];
-        setQueueLen();
-        setError(message);
-        if (res.status === 409 || res.status === 404) {
-          active.current = false;
-          setStatus("stopped");
-        }
-        flushing.current = false;
-        return;
+        throw new RefusedError(message, { cause: res.status });
       }
       throw new Error(`HTTP ${res.status}`);
-    } catch {
-      failures.current += 1;
-      setError(failures.current > 2 ? "No connection — points are queued and will be sent when you’re back online." : null);
-      const wait = BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)] ?? 30_000;
-      if (retryTimer.current) window.clearTimeout(retryTimer.current);
-      retryTimer.current = window.setTimeout(() => {
-        retryTimer.current = null;
-        void flushRef.current();
-      }, wait);
-    } finally {
-      flushing.current = false;
-    }
-  }, [tripId]);
+    },
+    [tripId],
+  );
 
-  useEffect(() => {
-    flushRef.current = flush;
-  }, [flush]);
+  /** The queue for the current trip (recreated when the trip changes). */
+  const getQueue = useCallback((): FixQueue<OutPoint> => {
+    if (queue.current && queueTripId.current === tripId) return queue.current;
+    queue.current?.dispose();
+    const q = createFixQueue<OutPoint>({
+      send: async (points) => {
+        try {
+          await send(points);
+        } catch (err) {
+          if (err instanceof RefusedError) {
+            // Not allowed any more (trip ended / not ours): stop sending, keep the UI honest.
+            q.clear();
+            setError(err.message);
+            if (err.cause === 409 || err.cause === 404) {
+              active.current = false;
+              setStatus("stopped");
+            }
+            return;
+          }
+          throw err;
+        }
+      },
+      onChange: onStats,
+    });
+    queue.current = q;
+    queueTripId.current = tripId;
+    return q;
+  }, [tripId, send, onStats]);
+
+  const flush = useCallback(() => getQueue().flush(), [getQueue]);
 
   const beacon = useCallback(() => {
-    if (queue.current.length === 0 || typeof navigator === "undefined" || !navigator.sendBeacon) return;
-    const batch = queue.current.slice(0, QUEUE_CAP);
+    if (typeof navigator === "undefined" || !navigator.sendBeacon || !queue.current) return;
+    const q = queue.current;
+    const points = q.drainForBeacon();
+    if (points.length === 0) return;
     // text/plain avoids a CORS preflight; the route parses JSON from either content type.
-    const blob = new Blob([JSON.stringify({ trip_id: tripId, points: batch })], { type: "text/plain" });
-    if (navigator.sendBeacon("/api/driver/location", blob)) {
-      queue.current = [];
-      setQueueLen();
-    }
+    const blob = new Blob([JSON.stringify({ trip_id: queueTripId.current ?? tripId, points })], { type: "text/plain" });
+    if (!navigator.sendBeacon("/api/driver/location", blob)) q.requeue(points);
   }, [tripId]);
 
   const requestWakeLock = useCallback(async () => {
@@ -170,6 +164,11 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
     }
     try {
       const s = await nav.wakeLock.request("screen");
+      if (!active.current) {
+        // Tracking stopped while the request was pending.
+        void s.release().catch(() => undefined);
+        return;
+      }
       sentinel.current = s;
       setWakeLock("active");
       s.addEventListener("release", () => {
@@ -194,6 +193,17 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
     setWakeLock((w) => (w === "unsupported" ? w : "released"));
   }, []);
 
+  /** Stop GPS, the heartbeat, pending timers and the wake lock (shared by stop() and the error path). */
+  const teardown = useCallback(async () => {
+    active.current = false;
+    if (watchId.current != null && typeof navigator !== "undefined" && navigator.geolocation) navigator.geolocation.clearWatch(watchId.current);
+    watchId.current = null;
+    if (heartbeat.current != null) window.clearInterval(heartbeat.current);
+    heartbeat.current = null;
+    queue.current?.dispose();
+    await releaseWakeLock();
+  }, [releaseWakeLock]);
+
   const onPosition = useCallback(
     (pos: GeolocationPosition) => {
       if (!active.current) return;
@@ -208,28 +218,29 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
       };
       lastFix.current = fix;
       setAccuracy(fix.accuracy);
-      setError(null);
+      setError((e) => (e && e.startsWith("No connection") ? e : null));
       const decision = shouldSendFix(lastSent.current, fix);
       if (!decision.send) return;
-      enqueue(fix);
-      void flush();
+      lastSent.current = fix;
+      getQueue().enqueue(toOut(fix), { immediate: decision.reason === "first" });
     },
-    [enqueue, flush],
+    [getQueue],
   );
 
-  const onPositionError = useCallback((err: GeolocationPositionError) => {
-    if (!active.current) return;
-    if (err.code === err.PERMISSION_DENIED) {
-      setError("Location access is blocked. Allow it for this app in Settings, then try again.");
-      setStatus("error");
-      active.current = false;
-      if (watchId.current != null) navigator.geolocation.clearWatch(watchId.current);
-      watchId.current = null;
-      return;
-    }
-    if (err.code === err.TIMEOUT) setError("Waiting for GPS… move outside if you can.");
-    else setError("GPS is unavailable right now.");
-  }, []);
+  const onPositionError = useCallback(
+    (err: GeolocationPositionError) => {
+      if (!active.current) return;
+      if (err.code === err.PERMISSION_DENIED) {
+        void teardown();
+        setError("Location access is blocked. Allow it for this app in Settings, then try again.");
+        setStatus("error");
+        return;
+      }
+      if (err.code === err.TIMEOUT) setError("Waiting for GPS… move outside if you can.");
+      else setError("GPS is unavailable right now.");
+    },
+    [teardown],
+  );
 
   const start = useCallback(() => {
     if (active.current) return;
@@ -238,41 +249,42 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
       setStatus("error");
       return;
     }
+    // Never stack watchers / intervals from an earlier run.
+    if (watchId.current != null) navigator.geolocation.clearWatch(watchId.current);
+    watchId.current = null;
+    if (heartbeat.current != null) window.clearInterval(heartbeat.current);
+    heartbeat.current = null;
+
     active.current = true;
-    failures.current = 0;
     lastSent.current = null;
+    lastFix.current = null;
     setPaused(false);
     setError(null);
     setStatus("tracking");
+    getQueue();
     watchId.current = navigator.geolocation.watchPosition(onPosition, onPositionError, WATCH_OPTIONS);
     void requestWakeLock();
     heartbeat.current = window.setInterval(() => {
       if (!active.current) return;
       const f = lastFix.current;
       if (!f) return;
-      const since = Date.now() - (lastSent.current?.at ?? 0);
-      if (since >= TRACKING_DEFAULTS.heartbeatMs) {
-        enqueue({ ...f, at: Date.now() });
-        void flush();
-      } else if (queue.current.length > 0) {
-        void flush();
-      }
-    }, 5_000);
-  }, [enqueue, flush, onPosition, onPositionError, requestWakeLock]);
+      const now = Date.now();
+      // Only re-stamp a fix that is still fresh and passed the accuracy gate.
+      if (now - f.at > HEARTBEAT_MAX_FIX_AGE_MS) return;
+      if (f.accuracy != null && f.accuracy > TRACKING_DEFAULTS.maxAccuracyM) return;
+      if (now - (lastSent.current?.at ?? 0) < TRACKING_DEFAULTS.heartbeatMs) return;
+      const stamped: Fix = { ...f, at: now };
+      lastSent.current = stamped;
+      getQueue().enqueue(toOut(stamped), { immediate: true });
+    }, HEARTBEAT_TICK_MS);
+  }, [getQueue, onPosition, onPositionError, requestWakeLock]);
 
   const stop = useCallback(async () => {
-    active.current = false;
-    if (watchId.current != null && typeof navigator !== "undefined") navigator.geolocation.clearWatch(watchId.current);
-    watchId.current = null;
-    if (heartbeat.current) window.clearInterval(heartbeat.current);
-    heartbeat.current = null;
-    if (retryTimer.current) window.clearTimeout(retryTimer.current);
-    retryTimer.current = null;
-    await releaseWakeLock();
+    await teardown();
     setStatus("stopped");
     setPaused(false);
-    if (queue.current.length > 0) await flush();
-  }, [flush, releaseWakeLock]);
+    await flush();
+  }, [teardown, flush]);
 
   const resume = useCallback(() => setPaused(false), []);
 
@@ -306,12 +318,14 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
     return () => {
       active.current = false;
       if (watchId.current != null && typeof navigator !== "undefined" && navigator.geolocation) navigator.geolocation.clearWatch(watchId.current);
-      if (heartbeat.current) window.clearInterval(heartbeat.current);
-      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      watchId.current = null;
+      if (heartbeat.current != null) window.clearInterval(heartbeat.current);
+      heartbeat.current = null;
       const s = sentinel.current;
       sentinel.current = null;
       if (s) void s.release().catch(() => undefined);
       beacon();
+      queue.current?.dispose();
     };
   }, [beacon]);
 

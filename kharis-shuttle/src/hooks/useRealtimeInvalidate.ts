@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
+import { isIgnorableChange } from "@/lib/tracking/columns";
 
 export type RealtimeInvalidateOptions = {
   /** Table in the `public` schema (must be in the supabase_realtime publication). */
@@ -18,19 +19,28 @@ export type RealtimeInvalidateOptions = {
   enabled?: boolean;
   /** Called (debounced) in addition to the refresh. */
   onChange?: () => void;
+  /**
+   * Skip the refresh when an UPDATE changed only these columns (needs the table's
+   * replica identity to be `full` so the payload carries the old row; otherwise
+   * every update refreshes). E.g. the trips.last_* columns the GPS trigger rewrites.
+   */
+  ignoreColumns?: readonly string[];
 };
+
+type ChangePayload = { eventType?: string; old?: unknown; new?: unknown };
 
 /**
  * Subscribe to postgres_changes on one table and `router.refresh()` the current
  * Server Component tree (debounced) whenever a row changes. RLS applies, so a
  * driver sees every booking / request, a student only their own.
  */
-export function useRealtimeInvalidate({ table, filter, event = "*", debounceMs = 400, enabled = true, onChange }: RealtimeInvalidateOptions): void {
+export function useRealtimeInvalidate({ table, filter, event = "*", debounceMs = 400, enabled = true, onChange, ignoreColumns }: RealtimeInvalidateOptions): void {
   const router = useRouter();
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
   });
+  const ignoreKey = ignoreColumns && ignoreColumns.length > 0 ? ignoreColumns.join(",") : "";
 
   useEffect(() => {
     if (!enabled) return;
@@ -42,6 +52,7 @@ export function useRealtimeInvalidate({ table, filter, event = "*", debounceMs =
     } catch {
       return;
     }
+    const ignore = ignoreKey ? ignoreKey.split(",") : [];
 
     const bump = () => {
       if (timer) window.clearTimeout(timer);
@@ -51,14 +62,18 @@ export function useRealtimeInvalidate({ table, filter, event = "*", debounceMs =
         router.refresh();
       }, debounceMs);
     };
+    const onPayload = (payload: ChangePayload) => {
+      if (ignore.length > 0 && payload.eventType === "UPDATE" && isIgnorableChange(payload.old, payload.new, ignore)) return;
+      bump();
+    };
 
     const name = `inv:${table}:${filter ?? "all"}:${Math.random().toString(36).slice(2, 8)}`;
     const spec = filter ? { event, schema: "public", table, filter } : { event, schema: "public", table };
-    channel = supabase.channel(name).on("postgres_changes", spec, bump).subscribe();
+    channel = supabase.channel(name).on("postgres_changes", spec, onPayload).subscribe();
 
     return () => {
       if (timer) window.clearTimeout(timer);
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [table, filter, event, debounceMs, enabled, router]);
+  }, [table, filter, event, debounceMs, enabled, router, ignoreKey]);
 }

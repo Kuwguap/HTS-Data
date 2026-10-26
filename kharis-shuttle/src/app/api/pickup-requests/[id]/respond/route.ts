@@ -1,6 +1,6 @@
 import { ApiError, ok, parseBody, withHandler, type RouteCtx } from "@/lib/api";
 import { requireRole } from "@/lib/auth/require";
-import { requestPlace } from "@/lib/data/driver";
+import { requestPlace, requireTripAccess } from "@/lib/data/driver";
 import type { PickupLocation } from "@/lib/db.types";
 import { notifyAndDrain } from "@/lib/notify/enqueue";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -10,17 +10,20 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/pickup-requests/[id]/respond { action: accept | decline, note? }
- * Driver only, only while pending. Sets status, driver_id, responded_at,
- * response_note and notifies the rider. Responds { request }.
+ * Driver only, only while pending. When the request is tied to a trip, only that
+ * trip's driver (or an admin, or any driver while nobody is assigned) may answer.
+ * Sets status, driver_id, responded_at, response_note and notifies the rider.
+ * Responds { request }.
  */
 export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, { params }) => {
   const { id } = await params;
-  const { user } = await requireRole("driver");
+  const { user, profile } = await requireRole("driver");
   const input = await parseBody(request, respondPickupRequestSchema);
   const admin = createAdminClient();
 
   const { data: existing } = await admin.from("pickup_requests").select("*").eq("id", id).maybeSingle();
   if (!existing) throw new ApiError(404, "NOT_FOUND", "That request no longer exists.");
+  if (existing.trip_id) await requireTripAccess(existing.trip_id, profile);
   if (existing.status !== "pending") throw new ApiError(409, "CONFLICT", "This request was already answered.");
   if (new Date(existing.expires_at).getTime() < Date.now()) throw new ApiError(409, "CONFLICT", "This request has expired.");
 

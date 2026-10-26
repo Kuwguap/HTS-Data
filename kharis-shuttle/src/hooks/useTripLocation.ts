@@ -108,16 +108,20 @@ export function useTripLocation({ tripId, initialTrip, staleSeconds }: UseTripLo
   const subscribed = useRef(false);
   const mounted = useRef(true);
   const inFlight = useRef<Promise<void> | null>(null);
+  // Bumped by every (re)subscription; a fetch started under an older epoch must not touch state.
+  const epoch = useRef(0);
 
   const fetchLocation = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
+    const myEpoch = epoch.current;
+    const alive = () => mounted.current && epoch.current === myEpoch;
     const run = (async () => {
       try {
         const since = lastDbId.current > 0 ? `?since=${lastDbId.current}` : "";
         const res = await fetch(`/api/trips/${tripId}/location${since}`, { credentials: "same-origin", cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok || !alive()) return;
         const data = (await res.json()) as LocationResponse;
-        if (!mounted.current) return;
+        if (!alive()) return;
         if (data.trip) setTrip((prev) => ({ ...prev, ...data.trip }));
         if (Array.isArray(data.points) && data.points.length > 0) {
           for (const p of data.points) if (typeof p.id === "number" && p.id > lastDbId.current) lastDbId.current = p.id;
@@ -131,7 +135,7 @@ export function useTripLocation({ tripId, initialTrip, staleSeconds }: UseTripLo
     try {
       await run;
     } finally {
-      inFlight.current = null;
+      if (inFlight.current === run) inFlight.current = null;
     }
   }, [tripId]);
 
@@ -152,7 +156,10 @@ export function useTripLocation({ tripId, initialTrip, staleSeconds }: UseTripLo
   // Initial fetch + realtime channel + polling fallback.
   useEffect(() => {
     mounted.current = true;
+    epoch.current += 1;
     lastDbId.current = 0;
+    subscribed.current = false;
+    inFlight.current = null; // a fetch from the previous trip may still be running; it checks the epoch
     void fetchLocation();
 
     let channel: RealtimeChannel | null = null;
@@ -232,6 +239,9 @@ export function useTripLocation({ tripId, initialTrip, staleSeconds }: UseTripLo
     return () => {
       cancelled = true;
       mounted.current = false;
+      epoch.current += 1;
+      subscribed.current = false;
+      inFlight.current = null;
       document.removeEventListener("visibilitychange", onVisible);
       if (graceTimer.current) window.clearTimeout(graceTimer.current);
       graceTimer.current = null;

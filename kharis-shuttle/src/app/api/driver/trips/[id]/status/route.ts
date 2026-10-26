@@ -15,12 +15,13 @@ export const dynamic = "force-dynamic";
  * Assigned driver / admin / any driver when unassigned (set_trip_status auto-claims).
  *   departed  → trip_departed to confirmed riders
  *   cancelled → trip_cancelled to confirmed + waitlisted riders ({message: reason})
+ * Nothing is sent when the trip was already in the requested status.
  */
 export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, { params }) => {
   const { id } = await params;
   const { user, profile } = await requireRole("driver");
   const input = await parseBody(request, driverTripStatusSchema);
-  await requireTripAccess(id, profile);
+  const { trip: before } = await requireTripAccess(id, profile);
 
   const admin = createAdminClient();
   const { data: trip, error } = await admin.rpc("set_trip_status", {
@@ -32,7 +33,9 @@ export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, { para
   if (error) throw fromPostgresError(error);
   if (!trip) throw new ApiError(500, "INTERNAL", "Could not update the trip.");
 
-  if (input.status === "departed" || input.status === "cancelled") {
+  // set_trip_status is a no-op when the status is unchanged (double tap / stale page): never re-notify.
+  const changed = before.status !== input.status;
+  if (changed && (input.status === "departed" || input.status === "cancelled")) {
     const statuses: BookingStatus[] = input.status === "departed" ? ["confirmed", "boarded"] : ["confirmed", "waitlisted", "boarded"];
     const { data: riders } = await admin.from("bookings").select("user_id").eq("trip_id", id).in("status", statuses);
     const userIds = (riders ?? []).map((r) => r.user_id);
@@ -62,7 +65,8 @@ export const POST = withHandler<RouteCtx<{ id: string }>>(async (request, { para
           kind: "trip_cancelled",
           vars: { ...vars, message: input.reason ?? "" },
           url: `/app/trips/${trip.id}`,
-          dedupePrefix: `cancelled:${trip.id}`,
+          // Same prefix as the admin cancel / day-off routes: one cancellation notice per rider per trip.
+          dedupePrefix: `trip_cancelled:${trip.id}`,
           ttlSeconds: 3600,
           urgency: "high",
           collapseTag: `trip:${trip.id}`,
