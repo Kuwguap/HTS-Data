@@ -37,7 +37,7 @@ Generate the key pair once with `pnpm vapid` and keep it: rotating the keys inva
 
 ## Delivery rules
 
-* **Claim**: `claim_pending_notifications(limit)` takes `pending` rows (and `sending` rows stuck > 2 min from a crashed drain) whose TTL has not passed and `push_attempts < 5`, marks them `sending` and increments `push_attempts`. Concurrent drains are safe (`skip locked`).
+* **Claim**: `claim_pending_notifications(limit)` takes `pending` rows that were never claimed or whose last claim is > 45 s old (and `sending` rows stuck > 2 min from a crashed drain) whose TTL has not passed and `push_attempts < 5`, marks them `sending`, increments `push_attempts` and returns the incremented value. Concurrent drains are safe (`skip locked`).
 * **Fan-out**: one payload per row, sent to every active subscription of the recipient (`disabled_at is null`), at most `concurrency` (20) pushes in flight across the batch.
 * **Row outcome**
   * any device accepted → `sent`
@@ -45,7 +45,11 @@ Generate the key pair once with `pnpm vapid` and keep it: rotating the keys inva
   * every subscription gone (404/410) → subscriptions deleted, row `skipped`
   * a retryable failure and no success → `pending` again (next tick retries); after the 5th attempt → `failed`
   * only permanent failures → `failed`
-* **Budget**: the drain stops claiming new batches once `budgetMs` has passed; rows claimed but not started by then are handed straight back (`pending`) instead of sitting in `sending` for two minutes. `/api/cron/tick` uses 55 s (`maxDuration = 60`), `after()` drains use 25 s.
+  * 401/403 from the push service (our VAPID keys) → **handed back** (see below): the row stays `pending` and delivers once the keys are fixed
+* **Hand-back (attempt refund)**: a row the drain claimed but never tried to send — the budget ran out, the claim re-served an id this run already handled, or VAPID was rejected — is put back with `update notifications set push_status = 'pending', push_attempts = push_attempts - 1` (never below 0) so an unsent row never loses one of its 5 attempts. `finish_notification(…, 'pending')` keeps `push_claimed_at`, so the row is invisible to the claim for 45 s: the run that handed it back cannot take it again; the next tick does.
+* **One run never re-sends a row**: `drainOutbox` remembers the ids it claimed. A later batch that re-serves one (a `pending` hand-back with the cooldown already over, or a fake clock in tests) is handed back untouched, and a batch made only of such ids ends the loop. Without this a single run could retry a 429 row five times within a second and burn every attempt.
+* **Budget**: the drain stops claiming new batches once `budgetMs` has passed; rows claimed but not started by then are handed back (attempt refunded) instead of sitting in `sending` for two minutes. `/api/cron/tick` computes the budget from what is left of `maxDuration = 60` after `run_tick`, minus the 10 s push socket timeout and 2 s safety (48 s at most); `after()` drains use 25 s.
+* **Subscription counters**: `fail_count` is a read-modify-write from Node. Within one run every read/write for a given subscription id is serialised (a per-id promise chain with the last value cached), so several rows for the same person in one batch cannot lose increments. Two drains running at once can still race on the same subscription; that is accepted for now (worst case a disable happens a push later). The SQL-side fix, if it ever matters: a `bump_subscription_failures(uuid[])` function doing `update push_subscriptions set fail_count = fail_count + 1, disabled_at = case when fail_count + 1 >= 10 then now() end where id = any($1)` in one statement.
 
 ## Failure classes (`send.ts`)
 
@@ -53,7 +57,7 @@ Generate the key pair once with `pnpm vapid` and keep it: rotating the keys inva
 |---|---|---|
 | 201 / 2xx | accepted | `last_success_at = now`, `fail_count = 0` |
 | 404 / 410 | subscription no longer exists (user revoked, browser rotated the endpoint, app uninstalled) | **delete** the subscription row (`gone`) |
-| 401 / 403 | VAPID rejected — the key pair the device subscribed with is not the one we sign with, or `VAPID_SUBJECT` is bad | not retryable; logged loudly with `[push] … VAPID keys are misconfigured`; `fail_count + 1` |
+| 401 / 403 | VAPID rejected — the key pair the device subscribed with is not the one we sign with, or `VAPID_SUBJECT` is bad | our problem, not the device's: logged loudly with `[push] … VAPID keys are misconfigured`; `fail_count` **untouched**, nothing disabled; the row is handed back `pending` with its attempt refunded so it goes out once the keys are fixed (until its TTL passes). A missing key pair (`vapid not configured`) is treated the same way |
 | 429 / 5xx | push service busy or down | retryable; `fail_count + 1`; the row goes back to `pending` |
 | 413 / other 4xx | our request is wrong for that endpoint | not retryable; `fail_count + 1` |
 | network error / timeout (10 s socket timeout) | could not reach the service | retryable |
@@ -69,4 +73,4 @@ A subscription whose `fail_count` reaches 10 gets `disabled_at = now` and is no 
 
 ## Scheduling
 
-`run_tick()` in SQL runs every minute from `pg_cron` regardless of the web host; `cron_tick()` then calls `POST /api/cron/tick` through `pg_net` so pushes leave right away. Any external cron (cron-job.org, GitHub Actions) can hit the same URL with the bearer as a backup. The response carries the `tick_runs` row and the drain counters; a non-200 means `run_tick` failed.
+`run_tick()` in SQL runs every minute from `pg_cron` regardless of the web host; `cron_tick()` then calls `POST /api/cron/tick` through `pg_net` with the body `{"source":"pg_cron","at":…}` so pushes leave right away. Because the tick already ran in SQL, the route **skips `rpc('run_tick')` when the JSON body says `source: "pg_cron"`** and only drains (`tick_ran: false` in the response). Any external cron (cron-job.org, GitHub Actions) can hit the same URL with the bearer as a backup — a GET, an empty body or any other `source` runs the tick as well. The response carries the `tick_runs` row (when it ran) and the drain counters; a non-200 means `run_tick` failed.

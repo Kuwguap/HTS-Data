@@ -8,6 +8,7 @@ import { Banner } from "@/components/ui/Banner";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { useToast } from "@/components/ui/Toast";
+import { APP_SHORT_NAME } from "@/lib/constants";
 
 export type EnableNotificationsProps = {
   /** Called after a successful subscribe (e.g. advance the onboarding step). */
@@ -31,9 +32,9 @@ export function EnableNotifications({ onEnabled, testAfterEnable = true, allowDi
   const [testing, setTesting] = useState(false);
 
   const enable = async () => {
-    const ok = await push.subscribe();
-    if (!ok) {
-      toast(`⚠️ ${push.error ?? "Could not turn on reminders — try again"}`, { tone: "red" });
+    const result = await push.subscribe();
+    if (!result.ok) {
+      toast(`⚠️ ${result.error ?? "Could not turn on reminders — try again"}`, { tone: "red" });
       return;
     }
     toast("✅ Reminders are on", { tone: "green" });
@@ -43,9 +44,16 @@ export function EnableNotifications({ onEnabled, testAfterEnable = true, allowDi
 
   const test = async () => {
     setTesting(true);
-    const ok = await push.sendTest();
+    const result = await push.sendTest();
     setTesting(false);
-    toast(ok ? "📨 Test sent — check your notifications" : "⚠️ Could not send a test — try again", { tone: ok ? "green" : "red" });
+    toast(result.ok ? "📨 Test sent — check your notifications" : `⚠️ ${result.error ?? "Could not send a test — try again"}`, {
+      tone: result.ok ? "green" : "red",
+    });
+  };
+
+  const disable = async () => {
+    const result = await push.unsubscribe();
+    toast(result.ok ? "🔕 Reminders are off" : `⚠️ ${result.error ?? "Could not turn off reminders — try again"}`, { tone: result.ok ? "amber" : "red" });
   };
 
   if (push.status === "needs-install") {
@@ -71,7 +79,7 @@ export function EnableNotifications({ onEnabled, testAfterEnable = true, allowDi
         <p style={{ color: "var(--hint)", fontSize: "var(--fs-md)", margin: "6px 0 0" }}>
           {env.isIOS ? (
             <>
-              Open <strong>Settings → Notifications → Shuttle</strong> and turn on <strong>Allow Notifications</strong>, then come back here.
+              Open <strong>Settings → Notifications → {APP_SHORT_NAME}</strong> and turn on <strong>Allow Notifications</strong>, then come back here.
             </>
           ) : env.isAndroid ? (
             <>
@@ -96,7 +104,7 @@ export function EnableNotifications({ onEnabled, testAfterEnable = true, allowDi
             {testing ? "Sending…" : "📨 Send me a test"}
           </button>
           {allowDisable ? (
-            <button type="button" className="k-link" style={{ fontSize: "var(--fs-md)", color: "var(--hint)" }} onClick={() => push.unsubscribe()}>
+            <button type="button" className="k-link" style={{ fontSize: "var(--fs-md)", color: "var(--hint)" }} onClick={disable}>
               Turn off
             </button>
           ) : null}

@@ -14,10 +14,13 @@ const { rpc, createAdminClient, drainOutbox } = vi.hoisted(() => {
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient }));
 vi.mock("@/lib/push/drain", () => ({ drainOutbox }));
 
-import { GET, POST } from "@/app/api/cron/tick/route";
+import { GET, POST, maxDuration } from "@/app/api/cron/tick/route";
 
 const SECRET = "cron-secret-for-tests-0123456789";
 const ctx = { params: Promise.resolve({}) };
+
+/** maxDuration minus the 10 s push socket timeout and 2 s safety, before any time passes. */
+const FULL_BUDGET_MS = maxDuration * 1000 - 10_000 - 2_000;
 
 const TICK_ROW = {
   id: 1,
@@ -38,10 +41,11 @@ const TICK_ROW = {
 
 const DRAIN = { claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1, requeued: 0, deliveries: 11, batches: 2, durationMs: 300, rows: [] };
 
-function request(method: string, authorization?: string) {
+function request(method: string, authorization?: string, body?: string, contentType = "application/json") {
   return new Request("http://localhost:3100/api/cron/tick", {
     method,
-    headers: authorization ? { authorization } : {},
+    headers: { ...(authorization ? { authorization } : {}), ...(body !== undefined ? { "content-type": contentType } : {}) },
+    body,
   });
 }
 
@@ -98,22 +102,71 @@ describe("POST /api/cron/tick", () => {
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledWith("run_tick");
     expect(drainOutbox).toHaveBeenCalledTimes(1);
-    expect(drainOutbox.mock.calls[0]![0]).toMatchObject({ budgetMs: 55_000 });
+    const budget = drainOutbox.mock.calls[0]![0].budgetMs as number;
+    expect(budget).toBeLessThanOrEqual(FULL_BUDGET_MS);
+    expect(budget).toBeGreaterThan(FULL_BUDGET_MS - 1_000);
     expect(drainOutbox.mock.calls[0]![0].admin).toBe(createAdminClient.mock.results[0]!.value);
     // tick before drain
     expect(rpc.mock.invocationCallOrder[0]!).toBeLessThan(drainOutbox.mock.invocationCallOrder[0]!);
 
     const body = await res.json();
     expect(body.ok).toBe(true);
+    expect(body.tick_ran).toBe(true);
+    expect(body.source).toBeNull();
     expect(body.tick).toEqual(TICK_ROW);
     expect(body.push).toMatchObject({ claimed: 12, sent: 10, failed: 0, skipped: 2, gone: 1 });
     expect(body.push.rows).toBeUndefined();
   });
 
-  it("accepts GET too (pg_net / cron-job.org)", async () => {
+  it("computes the drain budget from the time run_tick used", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    rpc.mockImplementation(async () => {
+      t += 7_000; // a slow tick
+      return { data: TICK_ROW, error: null };
+    });
+    const res = await POST(request("POST", `Bearer ${SECRET}`), ctx);
+    expect(res.status).toBe(200);
+    expect(drainOutbox.mock.calls[0]![0].budgetMs).toBe(FULL_BUDGET_MS - 7_000);
+    expect((await res.json()).durationMs).toBe(7_000);
+  });
+
+  it("never passes a negative budget when the tick ate the whole window", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    rpc.mockImplementation(async () => {
+      t += maxDuration * 1000;
+      return { data: TICK_ROW, error: null };
+    });
+    await POST(request("POST", `Bearer ${SECRET}`), ctx);
+    expect(drainOutbox.mock.calls[0]![0].budgetMs).toBe(0);
+  });
+
+  it("skips run_tick when pg_cron says it already ran it, and still drains", async () => {
+    const res = await POST(request("POST", `Bearer ${SECRET}`, JSON.stringify({ source: "pg_cron", at: "2026-10-27T06:30:00Z" })), ctx);
+    expect(res.status).toBe(200);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(drainOutbox).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: true, source: "pg_cron", tick_ran: false, tick: null, tick_error: null });
+    expect(body.push.sent).toBe(10);
+  });
+
+  it("runs the tick for other sources, non-JSON bodies and bodies without source", async () => {
+    await POST(request("POST", `Bearer ${SECRET}`, JSON.stringify({ source: "cron-job.org" })), ctx);
+    await POST(request("POST", `Bearer ${SECRET}`, JSON.stringify({ at: "x" })), ctx);
+    await POST(request("POST", `Bearer ${SECRET}`, "not json"), ctx);
+    await POST(request("POST", `Bearer ${SECRET}`, JSON.stringify("pg_cron")), ctx);
+    await POST(request("POST", `Bearer ${SECRET}`, JSON.stringify({ source: 42 })), ctx);
+    expect(rpc).toHaveBeenCalledTimes(5);
+    expect(drainOutbox).toHaveBeenCalledTimes(5);
+  });
+
+  it("accepts GET too (pg_net / cron-job.org) and always runs the tick there", async () => {
     const res = await GET(request("GET", `bearer ${SECRET}`), ctx);
     expect(res.status).toBe(200);
     expect(rpc).toHaveBeenCalledWith("run_tick");
+    expect((await res.json()).tick_ran).toBe(true);
   });
 
   it("still drains when run_tick fails, and reports a 500", async () => {

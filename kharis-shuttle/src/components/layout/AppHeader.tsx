@@ -40,38 +40,41 @@ export type RoundButtonProps = {
   className?: string;
 };
 
-/** 36px white round icon button for header slots (emoji or glyph inside). */
+/**
+ * 36px white round icon button for header slots (emoji or glyph inside). The
+ * element itself is a 44px tap target (.k-hit); the circle is its face.
+ */
 export function RoundButton({ label, children, href, onClick, badge, className }: RoundButtonProps) {
-  const style = {
-    position: "relative" as const,
+  const cls = ["k-hit", "k-hit--36", className ?? ""].join(" ").trim();
+  const faceStyle = {
     width: 36,
     height: 36,
     borderRadius: 999,
     background: "var(--surface)",
     color: "var(--text)",
     boxShadow: "var(--shadow)",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
     fontSize: 18,
     fontWeight: 700,
     lineHeight: 1,
   };
   const inner = (
     <>
-      <span aria-hidden="true">{children}</span>
-      {badge ? <span style={{ position: "absolute", top: -4, right: -6 }}>{badge}</span> : null}
+      <span className="k-hit-face" aria-hidden="true" style={faceStyle}>
+        {children}
+      </span>
+      {/* Same spot as before relative to the circle: the tap box is 4px larger on every side. */}
+      {badge ? <span style={{ position: "absolute", top: 0, right: -2 }}>{badge}</span> : null}
     </>
   );
   if (href) {
     return (
-      <Link href={href} aria-label={label} className={className} style={style}>
+      <Link href={href} aria-label={label} className={cls}>
         {inner}
       </Link>
     );
   }
   return (
-    <button type="button" aria-label={label} onClick={onClick} className={className} style={style}>
+    <button type="button" aria-label={label} onClick={onClick} className={cls}>
       {inner}
     </button>
   );

@@ -6,6 +6,7 @@ import { Art } from "@/components/ui/Art";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { useToast } from "@/components/ui/Toast";
+import { APP_SHORT_NAME } from "@/lib/constants";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -87,7 +88,7 @@ export function InstallGate({ intro, className }: InstallGateProps) {
         <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
           <Art k="bus" size={40} />
           <div>
-            <h3 style={{ fontSize: 20, fontWeight: 800 }}>Add Shuttle to your Home Screen</h3>
+            <h3 style={{ fontSize: 20, fontWeight: 800 }}>Add {APP_SHORT_NAME} to your Home Screen</h3>
             <p style={{ color: "var(--hint)", fontSize: "var(--fs-sm)", margin: "2px 0 0" }}>
               {intro ?? "Reminders only work from the installed app. It takes 10 seconds."}
             </p>
@@ -106,7 +107,7 @@ export function InstallGate({ intro, className }: InstallGateProps) {
           <Step n={2} emoji="➕" title="Choose “Add to Home Screen”">
             Scroll down the list a little if you don’t see it.
           </Step>
-          <Step n={3} emoji="🚌" title="Open Shuttle from your Home Screen">
+          <Step n={3} emoji="🚌" title={`Open ${APP_SHORT_NAME} from your Home Screen`}>
             Log in there once, then turn on reminders.
           </Step>
         </ol>

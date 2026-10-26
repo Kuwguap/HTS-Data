@@ -242,6 +242,64 @@ describe("run_tick — late first tick", () => {
   });
 });
 
+describe("run_tick — reminder lead follows settings", () => {
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  it("uses the CURRENT reminder_lead_minutes for scheduled trips, not the materialised reminder_at", async () => {
+    const first = await tick(c, at("05:59"));
+    expect(first.trips_created).toBe(18);
+    const t = await tripAt(MON, "07:30");
+    expect(t.reminder_at?.toISOString()).toBe(new Date(at("06:30")).toISOString()); // lead 60 at materialisation
+
+    await c.query("update settings set reminder_lead_minutes = 30 where id = 1");
+
+    // 06:35 is past the old (frozen) 06:30 moment but before the new 07:00 one → nothing
+    const early = await tick(c, at("06:35"));
+    expect(early.reminders_enqueued).toBe(0);
+    expect((await tripAt(MON, "07:30")).reminder_sent_at).toBeNull();
+    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'trip_reminder'")).toBe("0");
+
+    const due = await tick(c, at("07:00"));
+    expect(due.reminders_enqueued).toBe(3); // s1, s2, s3 — nobody booked
+    const after = await tripAt(MON, "07:30");
+    expect(after.reminder_sent_at).toBeTruthy();
+    expect(after.reminder_at?.toISOString()).toBe(new Date(at("07:00")).toISOString()); // audit value refreshed
+    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'trip_reminder'")).toBe("3");
+    // the 09:30 trip is now due at 09:00, not 08:30
+    expect((await tick(c, at("08:31"))).reminders_enqueued).toBe(0);
+    expect((await tick(c, at("09:00"))).reminders_enqueued).toBe(3);
+  });
+
+  it("ad-hoc trips keep using their own reminder_at (null = no reminder)", async () => {
+    const adhoc = await one<TripRow>(
+      c,
+      `select * from create_adhoc_trip('to_hostel', 'KSB', 'Kharis Courts Hostel', $1::timestamptz, 10, null, null)`,
+      [at("17:00")],
+    );
+    expect(adhoc.reminder_at?.toISOString()).toBe(new Date(at("16:30")).toISOString()); // lead is 30 now
+    // lower the lead again: the ad-hoc trip's moment stays 16:30, so 16:30 fires it
+    await c.query("update settings set reminder_lead_minutes = 5 where id = 1");
+    expect((await tick(c, at("16:29"))).reminders_enqueued).toBe(0);
+    expect((await tick(c, at("16:30"))).reminders_enqueued).toBe(3);
+    expect(await scalar<string>(c, "select count(*) from notifications where dedupe_key like $1", [`reminder:${adhoc.id}:%`])).toBe("3");
+
+    const silent = await one<TripRow>(
+      c,
+      `select * from create_adhoc_trip('to_hostel', 'KSB', 'Kharis Courts Hostel', $1::timestamptz, 10, null, null)`,
+      [at("19:00")],
+    );
+    await c.query("update trips set reminder_at = null where id = $1", [silent.id]);
+    const r = await tick(c, at("18:56"));
+    expect(await scalar<string>(c, "select count(*) from notifications where dedupe_key like $1", [`reminder:${silent.id}:%`])).toBe("0");
+    expect(r.reminders_enqueued).toBe(0);
+  });
+});
+
 describe("timezone", () => {
   beforeAll(async () => {
     c = await resetDb();

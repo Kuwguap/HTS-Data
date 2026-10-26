@@ -7,7 +7,8 @@
 --
 -- Matrix (authenticated):
 --   profiles            own row select/update; staff select all
---   settings, pickup_locations, schedule_times, service_days_off   select
+--   settings            select, all columns except signup_code / default_driver_id / updated_by
+--   pickup_locations, schedule_times, service_days_off   select
 --   trips               select from local today-1 onward, or trips they booked; staff all
 --   trip_locations      select last 2 days; staff all
 --   bookings            own rows; staff all
@@ -49,7 +50,6 @@ grant all on all sequences in schema public to service_role;
 
 grant select on
   public.profiles,
-  public.settings,
   public.pickup_locations,
   public.schedule_times,
   public.service_days_off,
@@ -64,6 +64,18 @@ to authenticated;
 
 grant update (full_name, phone, room, reminders_enabled, onboarded_at, updated_at)
   on public.profiles to authenticated;
+
+-- settings: column-level select — every column EXCEPT signup_code, default_driver_id and
+-- updated_by (the RLS policy below still applies). Browser clients must therefore never
+-- `select('*')` on settings (permission denied); list the columns. Server code reads it
+-- with the service role.
+revoke select on public.settings from authenticated;
+grant select (
+  id, hostel_name, campus_name, timezone, fare_pesewas, currency, payment_note, enquiry_phone,
+  default_seat_capacity, reminder_lead_minutes, nudge_minutes, manifest_lead_minutes,
+  booking_cutoff_minutes, booking_open_days_ahead, daily_announcement_enabled,
+  daily_announcement_time, location_stale_seconds, updated_at
+) on public.settings to authenticated;
 
 -- Functions: start from zero for anon/authenticated, then re-grant the few client ones.
 do $$

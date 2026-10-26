@@ -1,28 +1,36 @@
-/* Kharis Shuttle service worker.
+/* Shuttle Me service worker.
  *
  * Hand-written, ES2019, no modules. Rules:
  *  - HTML, RSC payloads and API calls are NEVER cached (network only); a failed
  *    navigation falls back to the precached /offline page.
  *  - Cache-first only for hashed Next assets (/_next/static/*), app icons
- *    (/icons/*) and Carto basemap tiles (bounded to TILE_LIMIT entries).
+ *    (/icons/*) and Carto basemap tiles (bounded to TILE_LIMIT entries). Tile
+ *    layers must be created with crossOrigin: true, otherwise their responses
+ *    are opaque and skipped.
+ *  - The unversioned META_CACHE holds the VAPID public key the page posts after
+ *    registration ({type:"VAPID_KEY", key}), so pushsubscriptionchange can
+ *    re-subscribe even when the old subscription is gone (iOS).
  *  - Push payload / click handling mirrors src/lib/push/sw-logic.ts. Keep both
  *    in sync; that file is the unit-tested one.
  *
  * Bump VERSION on every deploy that should drop old caches.
  */
 /* eslint-disable */
-const VERSION = "2026-10-26.2";
+const VERSION = "2026-10-26.3";
 const STATIC_CACHE = "ks-static-" + VERSION;
 const TILE_CACHE = "ks-tiles-" + VERSION;
+const META_CACHE = "ks-meta";
+const META_VAPID_URL = "/__ks-meta/vapid-key";
 const CACHE_PREFIX = "ks-";
 const OFFLINE_URL = "/offline";
 const TILE_LIMIT = 300;
 
-const DEFAULT_TITLE = "Kharis Shuttle";
+const DEFAULT_TITLE = "Shuttle Me";
 const DEFAULT_URL = "/app";
 const ICON_URL = "/icons/app/icon-192.png";
 const BADGE_URL = "/icons/app/badge-72.png";
 const RENOTIFY_KINDS = ["pickup_request_new"];
+const VAPID_KEY_MESSAGE = "VAPID_KEY";
 
 /* ---------- pure logic (mirrored from src/lib/push/sw-logic.ts) ---------- */
 
@@ -60,8 +68,11 @@ function notificationOptionsFor(payload) {
     badge: payload.badge || BADGE_URL,
     data: { url: payload.url || DEFAULT_URL, id: payload.id || null, kind: payload.kind || null },
   };
-  if (tag) options.tag = tag;
-  if (payload.kind && RENOTIFY_KINDS.indexOf(payload.kind) !== -1) options.renotify = true;
+  if (tag) {
+    options.tag = tag;
+    // renotify is only legal together with a tag.
+    if (payload.kind && RENOTIFY_KINDS.indexOf(payload.kind) !== -1) options.renotify = true;
+  }
   return { title: payload.title || DEFAULT_TITLE, options: options };
 }
 
@@ -77,6 +88,35 @@ function resolveClickUrl(payload, origin) {
     // not absolute either
   }
   return base + DEFAULT_URL;
+}
+
+function pickClickClient(list, url, origin) {
+  const base = origin.replace(/\/$/, "");
+  let target = null;
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (!c.url || c.url.indexOf(base) !== 0) continue;
+    if (c.url === url) return c;
+    if (!target) target = c;
+  }
+  return target;
+}
+
+function planResubscribe(event, storedKey) {
+  if (event.newSubscription) return { action: "post", subscription: event.newSubscription };
+  const oldKey = event.oldSubscription && event.oldSubscription.options ? event.oldSubscription.options.applicationServerKey : null;
+  if (oldKey) return { action: "subscribe", key: oldKey };
+  if (storedKey) return { action: "subscribe", key: storedKey };
+  return { action: "none", reason: "no-key" };
+}
+
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
 }
 
 function classifyRequest(url, mode, origin, method) {
@@ -112,6 +152,25 @@ function subscriptionBody(sub, ua) {
   };
 }
 
+/* ---------- meta cache (VAPID key) ---------- */
+
+function storeVapidKey(key) {
+  if (typeof key !== "string" || !key) return Promise.resolve();
+  return caches
+    .open(META_CACHE)
+    .then((cache) => cache.put(META_VAPID_URL, new Response(key, { headers: { "Content-Type": "text/plain" } })))
+    .catch(() => undefined);
+}
+
+function readVapidKey() {
+  return caches
+    .open(META_CACHE)
+    .then((cache) => cache.match(META_VAPID_URL))
+    .then((hit) => (hit ? hit.text() : null))
+    .then((text) => (text && text.length > 0 ? text : null))
+    .catch(() => null);
+}
+
 /* ---------- lifecycle ---------- */
 
 self.addEventListener("install", (event) => {
@@ -130,7 +189,7 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((k) => k.indexOf(CACHE_PREFIX) === 0 && k !== STATIC_CACHE && k !== TILE_CACHE)
+            .filter((k) => k.indexOf(CACHE_PREFIX) === 0 && k !== STATIC_CACHE && k !== TILE_CACHE && k !== META_CACHE)
             .map((k) => caches.delete(k)),
         ),
       )
@@ -140,7 +199,12 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   const data = event.data;
-  if (data && data.type === "SKIP_WAITING") self.skipWaiting();
+  if (!data) return;
+  if (data.type === "SKIP_WAITING") self.skipWaiting();
+  else if (data.type === VAPID_KEY_MESSAGE) {
+    const p = storeVapidKey(data.key);
+    if (event.waitUntil) event.waitUntil(p);
+  }
 });
 
 /* ---------- fetch ---------- */
@@ -213,45 +277,46 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const origin = self.location.origin;
   const url = resolveClickUrl(event.notification.data, origin);
+  const focus = (win) => (win && typeof win.focus === "function" ? win.focus() : win);
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
-      let target = null;
-      for (let i = 0; i < list.length; i++) {
-        const c = list[i];
-        if (c.url && c.url.indexOf(origin) === 0) {
-          if (c.url === url) {
-            target = c;
-            break;
-          }
-          if (!target) target = c;
-        }
-      }
-      if (target) {
-        const nav = target.url === url || typeof target.navigate !== "function" ? Promise.resolve(target) : target.navigate(url);
-        return nav
-          .catch(() => target)
-          .then((win) => (win && typeof win.focus === "function" ? win.focus() : undefined));
-      }
-      return self.clients.openWindow(url);
+      const target = pickClickClient(list, url, origin);
+      if (!target) return self.clients.openWindow(url);
+      if (target.url === url) return focus(target);
+      if (typeof target.navigate !== "function") return self.clients.openWindow(url);
+      // navigate() rejects for windows this worker does not control: open a fresh one
+      // instead of focusing a stale page.
+      return target
+        .navigate(url)
+        .then(focus)
+        .catch(() => self.clients.openWindow(url));
     }),
   );
 });
 
+function postSubscription(sub) {
+  return fetch("/api/push/subscribe", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(subscriptionBody(sub.toJSON(), self.navigator.userAgent || "")),
+  });
+}
+
 self.addEventListener("pushsubscriptionchange", (event) => {
-  const old = event.oldSubscription;
-  const key = old && old.options ? old.options.applicationServerKey : null;
-  if (!key) return;
   event.waitUntil(
-    self.registration.pushManager
-      .subscribe({ userVisibleOnly: true, applicationServerKey: key })
-      .then((sub) =>
-        fetch("/api/push/subscribe", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(subscriptionBody(sub.toJSON(), self.navigator.userAgent || "")),
-        }),
-      )
+    readVapidKey()
+      .then((storedKey) => {
+        const plan = planResubscribe(event, storedKey);
+        if (plan.action === "post") return postSubscription(plan.subscription);
+        if (plan.action === "subscribe") {
+          const key = typeof plan.key === "string" ? urlBase64ToUint8Array(plan.key) : plan.key;
+          return self.registration.pushManager
+            .subscribe({ userVisibleOnly: true, applicationServerKey: key })
+            .then((sub) => postSubscription(sub));
+        }
+        return undefined;
+      })
       .catch(() => undefined),
   );
 });

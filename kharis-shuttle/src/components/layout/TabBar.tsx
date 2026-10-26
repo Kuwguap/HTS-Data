@@ -12,7 +12,16 @@ export type TabItem = {
   art: ArtKey;
   /** Red count badge (unread inbox, pending requests). */
   badge?: number | null;
+  /** Noun for the badge in the link's accessible name ("Inbox, 3 unread"). Default "unread". */
+  badgeLabel?: string;
 };
+
+/** Accessible name for a tab link: "Inbox", or "Inbox, 3 unread" when a badge shows. */
+export function tabAccessibleName(item: Pick<TabItem, "label" | "badge" | "badgeLabel">): string {
+  const n = item.badge ?? 0;
+  if (n <= 0) return item.label;
+  return `${item.label}, ${n > 99 ? "99+" : n} ${item.badgeLabel ?? "unread"}`;
+}
 
 export type TabBarProps = {
   items: TabItem[];
@@ -48,12 +57,18 @@ export function TabBar({ items, className }: TabBarProps) {
     <nav className={["k-tabbar", className ?? ""].join(" ").trim()} aria-label="Main">
       <div className="k-tabbar-row">
         {items.map((item) => (
-          <Link key={item.href} href={item.href} className="k-tab" aria-current={item.href === active ? "page" : undefined}>
-            <span className="k-tab-icon">
+          <Link
+            key={item.href}
+            href={item.href}
+            className="k-tab"
+            aria-current={item.href === active ? "page" : undefined}
+            aria-label={tabAccessibleName(item)}
+          >
+            <span className="k-tab-icon" aria-hidden="true">
               <Art k={item.art} size={24} />
             </span>
-            <span>{item.label}</span>
-            <Badge count={item.badge} label={item.label.toLowerCase()} />
+            <span aria-hidden="true">{item.label}</span>
+            <Badge count={item.badge} decorative />
           </Link>
         ))}
       </div>

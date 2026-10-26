@@ -20,6 +20,8 @@ grant execute on function public.local_now(timestamptz) to authenticated, servic
 -- materialize_trips — create the trips for every date in [p_from, p_to] from the
 -- active schedule, skipping service_days_off. Idempotent (unique (schedule_time_id,
 -- service_date) + on conflict do nothing). Returns the number of trips created.
+-- reminder_at is stored for display only: run_tick() recomputes the reminder moment of
+-- scheduled trips from the CURRENT settings.reminder_lead_minutes at every tick.
 -- ---------------------------------------------------------------------------
 create or replace function public.materialize_trips(p_from date, p_to date)
 returns integer
@@ -287,17 +289,28 @@ begin
   end if;
 
   -- 3. Trip reminders: students WITHOUT an active booking, while booking is still open.
+  -- The reminder moment is computed at tick time for scheduled trips
+  -- (departure − settings.reminder_lead_minutes), so changing the lead in settings takes
+  -- effect immediately; trips.reminder_at is only authoritative for ad-hoc trips
+  -- (schedule_time_id is null), where NULL means "no reminder".
   for v_trip in
     select * from public.trips t
      where t.status in ('scheduled', 'boarding')
        and t.bookings_enabled
-       and t.reminder_at is not null
        and t.reminder_sent_at is null
-       and t.reminder_at <= v_now
+       and (t.schedule_time_id is not null or t.reminder_at is not null)
+       and (case when t.schedule_time_id is not null
+                 then t.departure_at - make_interval(mins => s.reminder_lead_minutes)
+                 else t.reminder_at
+            end) <= v_now
        and v_now < t.departure_at - v_cutoff
      order by t.departure_at
   loop
-    update public.trips set reminder_sent_at = v_now
+    update public.trips
+       set reminder_sent_at = v_now,
+           reminder_at = case when schedule_time_id is not null
+                              then departure_at - make_interval(mins => s.reminder_lead_minutes)
+                              else reminder_at end
      where id = v_trip.id and reminder_sent_at is null;
     if found then
       v_n := public.enqueue_notification(
@@ -333,7 +346,7 @@ begin
   -- Reminder window already passed (late first tick, cancelled, etc.): close it silently.
   update public.trips set reminder_sent_at = v_now
    where reminder_sent_at is null
-     and reminder_at is not null
+     and (schedule_time_id is not null or reminder_at is not null)
      and v_now >= departure_at - v_cutoff;
 
   -- 4. Nudges: confirmed riders, [departure - nudge_minutes, departure).

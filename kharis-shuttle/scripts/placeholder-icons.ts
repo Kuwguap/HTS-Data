@@ -1,12 +1,15 @@
 /**
  * Placeholder app icons: a blue gradient rounded square with a white bus
- * silhouette, rendered with sharp from an inline SVG. The orchestrator will
- * replace these with the Higgsfield-generated icon later; keep the same
- * output paths so nothing else changes.
+ * silhouette, rendered with sharp from an inline SVG. The real icons are built
+ * by scripts/build-icons.ts from the Higgsfield bus; this script only exists
+ * for previews and fresh checkouts without assets/icon-sources.
  *
  *   pnpm exec tsx scripts/placeholder-icons.ts
  *
- * Outputs:
+ * Output root: $ICONS_OUT_ROOT, defaulting to .ui-shots/placeholder-icons/ so
+ * a stray run can never overwrite the real icons under public/ and src/app/.
+ * Set ICONS_OUT_ROOT=. explicitly to write into the project (same layout as
+ * build-icons.ts):
  *   public/icons/app/icon-192.png           rounded square (any-purpose icon)
  *   public/icons/app/icon-512.png           rounded square
  *   public/icons/app/maskable-512.png       full-bleed, bus inside the 80% safe zone
@@ -14,12 +17,18 @@
  *   public/icons/app/badge-72.png           white bus on transparent (Android badge)
  *   src/app/icon.png                        favicon (Next metadata file)
  *   src/app/apple-icon.png                  apple-touch-icon (Next metadata file)
+ *
+ * Every PNG is exactly the declared pixel size (the SVG is rasterised at its
+ * own width/height and then resized to be safe; no density upscaling).
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
 const ROOT = path.resolve(__dirname, "..");
+const DEFAULT_OUT = path.join(ROOT, ".ui-shots", "placeholder-icons");
+/** Set ICONS_OUT_ROOT to render somewhere else (ICONS_OUT_ROOT=. targets public/ and src/app/). */
+const OUT_ROOT = process.env.ICONS_OUT_ROOT ? path.resolve(process.env.ICONS_OUT_ROOT) : DEFAULT_OUT;
 
 /** Bus silhouette in a 100×100 box. Windows and headlights are even-odd cut-outs. */
 const BUS_BODY =
@@ -43,7 +52,7 @@ function bus(fill: string, opacity = 1): string {
  * @param radius corner radius as a fraction of size (0 = full bleed)
  * @param scale  bus width as a fraction of size (maskable icons use the 80% safe zone)
  */
-function appIconSvg(size: number, radius: number, scale: number): string {
+export function appIconSvg(size: number, radius: number, scale: number): string {
   const r = Math.round(size * radius);
   const busSize = size * scale;
   const offset = (size - busSize) / 2;
@@ -67,34 +76,46 @@ function appIconSvg(size: number, radius: number, scale: number): string {
 </svg>`;
 }
 
-function badgeSvg(size: number): string {
+export function badgeSvg(size: number): string {
   const k = size / 100;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
   <g transform="scale(${k})">${bus("#ffffff")}</g>
 </svg>`;
 }
 
-async function png(svg: string, outPath: string): Promise<void> {
+/** Rasterise an SVG to a PNG of exactly `size`×`size` pixels. */
+export async function renderPng(svg: string, size: number): Promise<Buffer> {
+  return sharp(Buffer.from(svg))
+    .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+}
+
+async function png(svg: string, size: number, outPath: string): Promise<void> {
   await mkdir(path.dirname(outPath), { recursive: true });
-  const buf = await sharp(Buffer.from(svg), { density: 384 }).png({ compressionLevel: 9 }).toBuffer();
+  const buf = await renderPng(svg, size);
   await writeFile(outPath, buf);
-  console.log("wrote", path.relative(ROOT, outPath), `${buf.length} bytes`);
+  console.log("wrote", path.relative(ROOT, outPath).padEnd(56), `${size}×${size}`, `${buf.length} bytes`);
 }
 
 async function main(): Promise<void> {
-  const pub = path.join(ROOT, "public", "icons", "app");
-  const app = path.join(ROOT, "src", "app");
+  const pub = path.join(OUT_ROOT, "public", "icons", "app");
+  const app = path.join(OUT_ROOT, "src", "app");
+  if (OUT_ROOT === ROOT) console.warn("ICONS_OUT_ROOT=. — overwriting the real icons under public/ and src/app/");
+  else console.log("output root:", path.relative(ROOT, OUT_ROOT) || ".");
 
-  await png(appIconSvg(192, 0.22, 0.72), path.join(pub, "icon-192.png"));
-  await png(appIconSvg(512, 0.22, 0.72), path.join(pub, "icon-512.png"));
-  await png(appIconSvg(512, 0, 0.56), path.join(pub, "maskable-512.png"));
-  await png(appIconSvg(180, 0, 0.7), path.join(pub, "apple-touch-icon-180.png"));
-  await png(badgeSvg(72), path.join(pub, "badge-72.png"));
-  await png(appIconSvg(192, 0.22, 0.72), path.join(app, "icon.png"));
-  await png(appIconSvg(180, 0, 0.7), path.join(app, "apple-icon.png"));
+  await png(appIconSvg(192, 0.22, 0.72), 192, path.join(pub, "icon-192.png"));
+  await png(appIconSvg(512, 0.22, 0.72), 512, path.join(pub, "icon-512.png"));
+  await png(appIconSvg(512, 0, 0.56), 512, path.join(pub, "maskable-512.png"));
+  await png(appIconSvg(180, 0, 0.7), 180, path.join(pub, "apple-touch-icon-180.png"));
+  await png(badgeSvg(72), 72, path.join(pub, "badge-72.png"));
+  await png(appIconSvg(192, 0.22, 0.72), 192, path.join(app, "icon.png"));
+  await png(appIconSvg(180, 0, 0.7), 180, path.join(app, "apple-icon.png"));
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

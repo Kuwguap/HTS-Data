@@ -40,6 +40,16 @@ function byteLength(s: string): number {
   return Buffer.byteLength(s, "utf8");
 }
 
+/** UTF-8 size of the whole payload once serialised — what the push service sees. */
+export function payloadBytes(payload: PushPayload): number {
+  return byteLength(JSON.stringify(payload));
+}
+
+/** Bytes a string occupies inside the JSON (escapes included, quotes excluded). */
+function escapedBytes(s: string): number {
+  return byteLength(JSON.stringify(s)) - 2;
+}
+
 /**
  * Normalise a stored url to a same-origin path. Absolute URLs on our own origin
  * are reduced to their path; anything else (other origins, protocol-relative,
@@ -60,22 +70,36 @@ export function toSameOriginPath(url: string | null | undefined): string {
   return DEFAULT_URL;
 }
 
-/** Trim a string so that the whole payload fits, keeping an ellipsis. */
-function truncate(s: string, maxBytes: number): string {
-  if (byteLength(s) <= maxBytes) return s;
+/**
+ * Trim a string so that its JSON-escaped size (quotes, backslashes, newlines and
+ * control characters all grow when serialised) fits in maxBytes, keeping an ellipsis.
+ * Exported for tests.
+ */
+export function truncateEscaped(s: string, maxBytes: number): string {
+  if (escapedBytes(s) <= maxBytes) return s;
+  const ellipsis = "…";
+  if (maxBytes < escapedBytes(ellipsis)) return "";
   const chars = Array.from(s);
-  let out = "";
-  for (const ch of chars) {
-    if (byteLength(out + ch + "…") > maxBytes) break;
-    out += ch;
+  // Longest prefix whose escaped size plus the ellipsis fits (escaped size grows with the prefix).
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (escapedBytes(chars.slice(0, mid).join("") + ellipsis) <= maxBytes) lo = mid;
+    else hi = mid - 1;
   }
-  return out.trimEnd() + "…";
+  return chars.slice(0, lo).join("").trimEnd() + ellipsis;
+}
+
+/** Room left for `key` once every other field is serialised. */
+function budgetFor(payload: PushPayload, key: "body" | "title" | "tag"): number {
+  return Math.max(0, MAX_PAYLOAD_BYTES - payloadBytes({ ...payload, [key]: "" }));
 }
 
 /**
  * Build the payload for one outbox row. Never throws; always fits in
- * MAX_PAYLOAD_BYTES once serialised (long bodies are cut with an ellipsis,
- * then the title as a last resort).
+ * MAX_PAYLOAD_BYTES once serialised, measured on the escaped JSON (long bodies are
+ * cut with an ellipsis, then the title, then optional media / url / tag as a last resort).
  */
 export function buildPayload(row: NotificationLike): PushPayload {
   const payload: PushPayload = {
@@ -89,17 +113,26 @@ export function buildPayload(row: NotificationLike): PushPayload {
   if (row.icon) payload.icon = row.icon;
   if (row.badge) payload.badge = row.badge;
 
-  if (byteLength(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) {
-    const overheadWithoutBody = byteLength(JSON.stringify({ ...payload, body: "" }));
-    const bodyBudget = Math.max(0, MAX_PAYLOAD_BYTES - overheadWithoutBody - 16);
-    payload.body = truncate(payload.body, bodyBudget);
-  }
-  if (byteLength(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) {
-    // Pathological title (or icon URLs): cut the title too, drop optional media.
-    delete payload.icon;
-    delete payload.badge;
-    const overheadWithoutTitle = byteLength(JSON.stringify({ ...payload, title: "" }));
-    payload.title = truncate(payload.title, Math.max(0, MAX_PAYLOAD_BYTES - overheadWithoutTitle - 16));
+  const fits = () => payloadBytes(payload) <= MAX_PAYLOAD_BYTES;
+  const shrink: Array<() => void> = [
+    () => {
+      payload.body = truncateEscaped(payload.body, budgetFor(payload, "body"));
+    },
+    () => {
+      // Pathological title (or icon URLs): drop optional media, cut the title too.
+      delete payload.icon;
+      delete payload.badge;
+      payload.title = truncateEscaped(payload.title, budgetFor(payload, "title"));
+    },
+    () => {
+      // Something other than text is huge (url / tag straight from the row): fall back to safe values.
+      payload.url = DEFAULT_URL;
+      payload.tag = truncateEscaped(payload.tag ?? String(payload.kind), budgetFor(payload, "tag"));
+    },
+  ];
+  for (const step of shrink) {
+    if (fits()) break;
+    step();
   }
   return payload;
 }

@@ -23,6 +23,7 @@ type Claimed = {
   ttl_seconds: number;
   urgency: string;
   collapse_tag: string | null;
+  push_attempts: number;
   subscriptions: { id: string; endpoint: string; p256dh: string; auth: string }[];
 };
 
@@ -45,6 +46,31 @@ describe("render_template", () => {
     expect(fb.title).toBe("broadcast");
     expect(fb.body).toBe("");
     await c.query(`insert into message_templates (key, title, body) values ('broadcast', '📣 {title}', '{message}')`);
+  });
+
+  it("substitutes in a single pass: values containing {placeholders} are not re-expanded", async () => {
+    await c.query("update message_templates set title = 'Hi {name}', body = '{name}: {message}' where key = 'test'");
+    const r = await one<{ title: string; body: string }>(
+      c,
+      `select * from render_template('test', '{"name":"{message}", "message":"secret body"}'::jsonb)`,
+    );
+    expect(r.title).toBe("Hi {message}");
+    expect(r.body).toBe("{message}: secret body");
+    // a value that names an unknown placeholder, or a lone brace, is literal too
+    expect(await scalar<string>(c, `select render_text('{a} {b}', '{"a":"{b}","b":"{a}"}')`)).toBe("{b} {a}");
+    expect(await scalar<string>(c, `select render_text('open { brace {x}', '{"x":"1"}')`)).toBe("open { brace 1");
+    await c.query(`update message_templates set title = '🔔 Notifications are on', body = 'You''ll get shuttle reminders here, {name}.' where key = 'test'`);
+  });
+
+  it("collapses runs of spaces/tabs but keeps newlines", async () => {
+    await c.query(`update message_templates set body = E'Hi {name},\nyour seat   is {seat}.\t\tSee you.' where key = 'test'`);
+    const r = await one<{ title: string; body: string }>(c, `select * from render_template('test', '{"name":"Abena","seat":"A1"}'::jsonb)`);
+    expect(r.body).toBe("Hi Abena,\nyour seat is A1. See you.");
+    expect(r.body.split("\n")).toHaveLength(2);
+    // empty placeholder at a line start/end does not swallow the newline
+    expect(await scalar<string>(c, `select render_text(E'{x}\nline two', '{}')`)).toBe("line two");
+    expect(await scalar<string>(c, `select render_text(E'line one {x}\nline two', '{}')`)).toBe("line one \nline two");
+    await c.query(`update message_templates set body = 'You''ll get shuttle reminders here, {name}.' where key = 'test'`);
   });
 
   it("format_fare mirrors the app helper", async () => {
@@ -85,6 +111,21 @@ describe("enqueue_notification", () => {
     });
   });
 
+  it("treats a null or unknown urgency as 'normal'", async () => {
+    expect(
+      await scalar<number>(c, `select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'urg:null', 600, null, null)`, [IDS.s1]),
+    ).toBe(1);
+    expect(await scalar<string>(c, "select urgency from notifications where dedupe_key = $1", [`urg:null:${IDS.s1}`])).toBe("normal");
+    expect(
+      await scalar<number>(c, `select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'urg:bogus', 600, 'urgent!!', null)`, [IDS.s1]),
+    ).toBe(1);
+    expect(await scalar<string>(c, "select urgency from notifications where dedupe_key = $1", [`urg:bogus:${IDS.s1}`])).toBe("normal");
+    expect(
+      await scalar<number>(c, `select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'urg:high', 600, 'high', null)`, [IDS.s1]),
+    ).toBe(1);
+    expect(await scalar<string>(c, "select urgency from notifications where dedupe_key = $1", [`urg:high:${IDS.s1}`])).toBe("high");
+  });
+
   it("skips inactive profiles and empty recipient lists", async () => {
     await c.query("update profiles set is_active = false where id = $1", [IDS.s3]);
     expect(await scalar<number>(c, `select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'inactive:1')`, [IDS.s3])).toBe(0);
@@ -113,6 +154,7 @@ describe("claim_pending_notifications / finish_notification", () => {
 
     const claimed = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
     expect(claimed).toHaveLength(3);
+    expect(claimed.every((r) => r.push_attempts === 1)).toBe(true);
     const byUser = Object.fromEntries(claimed.map((r) => [r.user_id, r]));
     expect(byUser[IDS.s1]?.subscriptions.map((s) => s.endpoint).sort()).toEqual(["https://push.example/a", "https://push.example/a2"]);
     expect(byUser[IDS.s1]?.subscriptions[0]).toMatchObject({ p256dh: expect.any(String), auth: expect.any(String), id: expect.any(String) });
@@ -147,10 +189,41 @@ describe("claim_pending_notifications / finish_notification", () => {
     expect(m[s2.id]).toMatchObject({ push_status: "skipped", push_error: "no subscriptions" });
     expect(m[s3.id]).toMatchObject({ push_status: "pending", push_error: "429 retry" });
 
-    // the retried row is claimable again, with attempts = 2
+    // handing a row back keeps push_claimed_at, so the SAME drain run cannot re-claim it …
+    expect(await scalar<Date | null>(c, "select push_claimed_at from notifications where id = $1", [s3.id])).toBeTruthy();
+    expect(await rows(c, "select * from claim_pending_notifications(10)")).toHaveLength(0);
+    expect(await scalar<number>(c, "select push_attempts from notifications where id = $1", [s3.id])).toBe(1);
+
+    // … but after 45 s it is claimable again, with attempts = 2
+    await c.query("update notifications set push_claimed_at = now() - interval '46 seconds' where id = $1", [s3.id]);
     const second = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
     expect(second.map((r) => r.id)).toEqual([s3.id]);
+    expect(second[0]?.push_attempts).toBe(2);
     expect(await scalar<number>(c, "select push_attempts from notifications where id = $1", [s3.id])).toBe(2);
+  });
+
+  it("a 'pending' row handed back inside the 45 s window waits; a never-claimed row does not", async () => {
+    await c.query("delete from notifications");
+    await c.query(`select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'retry:1')`, [IDS.s1]);
+    const first = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
+    expect(first).toHaveLength(1);
+    await c.query("select finish_notification($1, 'pending', '503 retry')", [first[0]!.id]);
+    // 44 s later: still held back
+    await c.query("update notifications set push_claimed_at = now() - interval '44 seconds'");
+    expect(await rows(c, "select * from claim_pending_notifications(10)")).toHaveLength(0);
+    // a fresh row (push_claimed_at null) is served straight away, the held one is not
+    await c.query(`select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'retry:2')`, [IDS.s2]);
+    const fresh = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
+    expect(fresh.map((r) => r.user_id)).toEqual([IDS.s2]);
+    // 46 s later: served
+    await c.query("update notifications set push_claimed_at = now() - interval '46 seconds' where user_id = $1", [IDS.s1]);
+    const retried = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
+    expect(retried.map((r) => r.user_id)).toEqual([IDS.s1]);
+    expect(retried[0]?.push_attempts).toBe(2);
+    // run_tick's hygiene never touches a 'pending' row inside its TTL
+    await c.query("select finish_notification($1, 'pending', '503 again')", [retried[0]!.id]);
+    await c.query("select run_tick(now())");
+    expect(await scalar<string>(c, "select push_status from notifications where user_id = $1", [IDS.s1])).toBe("pending");
   });
 
   it("re-claims rows stuck in sending for more than 2 minutes and gives up after 5 attempts", async () => {

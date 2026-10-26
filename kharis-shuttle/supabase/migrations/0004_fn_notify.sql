@@ -31,7 +31,38 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- render_template — fill {placeholders} from p_vars (unknown placeholders → '')
+-- render_text — single-pass {placeholder} substitution (mirrors src/lib/notify/template.ts).
+-- The ORIGINAL template is tokenised once into placeholders / literal runs, so a value
+-- that itself contains '{message}' is emitted verbatim and never re-expanded.
+-- Unknown placeholders → ''. Runs of spaces/tabs collapse to one space; newlines are kept.
+-- ---------------------------------------------------------------------------
+create or replace function public.render_text(p_template text, p_vars jsonb)
+returns text
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select regexp_replace(
+           regexp_replace(
+             coalesce((
+               select string_agg(
+                        case when m.tok[1] is not null
+                             then coalesce(p_vars ->> substr(m.tok[1], 2, length(m.tok[1]) - 2), '')
+                             else m.tok[2]
+                        end,
+                        '' order by m.ord)
+                 from regexp_matches(coalesce(p_template, ''), '(\{[a-zA-Z0-9_]+\})|([^{]+|\{)', 'g')
+                      with ordinality as m(tok, ord)
+             ), ''),
+             '[ \t]{2,}', ' ', 'g'),
+           '^\s+|\s+$', '', 'g');
+$$;
+
+revoke all on function public.render_text(text, jsonb) from public, anon, authenticated;
+grant execute on function public.render_text(text, jsonb) to service_role;
+
+-- ---------------------------------------------------------------------------
+-- render_template — fill {placeholders} of a message_templates row via render_text().
 -- Falls back to the kind name as title when the template row is missing.
 -- ---------------------------------------------------------------------------
 create or replace function public.render_template(p_kind public.notification_kind, p_vars jsonb)
@@ -44,7 +75,6 @@ as $$
 declare
   v_title text;
   v_body  text;
-  v_key   text;
 begin
   select t.title, t.body into v_title, v_body from public.message_templates t where t.key = p_kind;
   if not found then
@@ -52,17 +82,8 @@ begin
     v_body  := '';
   end if;
 
-  for v_key in
-    select distinct m[1]
-      from regexp_matches(v_title || ' ' || v_body, '\{([a-zA-Z0-9_]+)\}', 'g') as m
-  loop
-    v_title := replace(v_title, '{' || v_key || '}', coalesce(p_vars ->> v_key, ''));
-    v_body  := replace(v_body,  '{' || v_key || '}', coalesce(p_vars ->> v_key, ''));
-  end loop;
-
-  -- Tidy up doubled spaces left by empty placeholders.
-  title := regexp_replace(trim(v_title), '\s{2,}', ' ', 'g');
-  body  := regexp_replace(trim(v_body),  '\s{2,}', ' ', 'g');
+  title := public.render_text(v_title, coalesce(p_vars, '{}'::jsonb));
+  body  := public.render_text(v_body,  coalesce(p_vars, '{}'::jsonb));
   return next;
 end
 $$;
@@ -107,7 +128,7 @@ begin
   select p.id, p_kind, v_title, v_body, p_url, coalesce(p_vars, '{}'::jsonb),
          v_prefix || ':' || p.id::text,
          greatest(coalesce(p_ttl_seconds, 3600), 60),
-         case when coalesce(p_urgency, 'normal') in ('very-low', 'low', 'normal', 'high') then p_urgency else 'normal' end,
+         case when p_urgency in ('very-low', 'low', 'normal', 'high') then p_urgency else 'normal' end,
          p_collapse_tag
     from public.profiles p
    where p.id = any (select distinct u from unnest(p_user_ids) as u)
@@ -124,12 +145,17 @@ grant execute on function public.enqueue_notification(uuid[], public.notificatio
 
 -- ---------------------------------------------------------------------------
 -- claim_pending_notifications — atomically take up to p_limit rows for sending.
--- Takes 'pending' rows and 'sending' rows stuck for > 2 minutes (crashed drain),
--- marks them sending, bumps push_attempts and returns them with the recipient's
--- active push subscriptions as a jsonb array ([] → caller marks the row skipped).
--- Rows that already failed 5 times are left alone (run_tick marks them failed).
+-- Takes 'pending' rows that were never claimed, or whose last claim is > 45 s old
+-- (a row handed back with finish_notification(…, 'pending') keeps push_claimed_at, so
+-- the same drain run never re-serves it — the retry waits for the next run), plus
+-- 'sending' rows stuck for > 2 minutes (crashed drain). Marks them sending, bumps
+-- push_attempts and returns them with the recipient's active push subscriptions as a
+-- jsonb array ([] → caller marks the row skipped). push_attempts is the value AFTER the
+-- bump (1 on the first delivery attempt). Rows that already failed 5 times are left
+-- alone (run_tick marks them failed).
 -- ---------------------------------------------------------------------------
-create or replace function public.claim_pending_notifications(p_limit integer default 100)
+drop function if exists public.claim_pending_notifications(integer);
+create function public.claim_pending_notifications(p_limit integer default 100)
 returns table (
   id            uuid,
   user_id       uuid,
@@ -141,6 +167,7 @@ returns table (
   ttl_seconds   integer,
   urgency       text,
   collapse_tag  text,
+  push_attempts integer,
   subscriptions jsonb
 )
 language plpgsql
@@ -152,7 +179,8 @@ begin
   with picked as (
     select n.id
       from public.notifications n
-     where (n.push_status = 'pending'
+     where ((n.push_status = 'pending'
+             and (n.push_claimed_at is null or n.push_claimed_at < now() - interval '45 seconds'))
             or (n.push_status = 'sending' and n.push_claimed_at < now() - interval '2 minutes'))
        and n.push_attempts < 5
        and n.created_at + make_interval(secs => n.ttl_seconds) > now()
@@ -167,9 +195,11 @@ begin
            push_attempts = n.push_attempts + 1
       from picked
      where n.id = picked.id
-    returning n.id, n.user_id, n.kind, n.title, n.body, n.url, n.data, n.ttl_seconds, n.urgency, n.collapse_tag, n.created_at
+    returning n.id, n.user_id, n.kind, n.title, n.body, n.url, n.data, n.ttl_seconds, n.urgency, n.collapse_tag,
+              n.push_attempts, n.created_at
   )
   select c.id, c.user_id, c.kind, c.title, c.body, c.url, c.data, c.ttl_seconds, c.urgency, c.collapse_tag,
+         c.push_attempts,
          coalesce((
            select jsonb_agg(jsonb_build_object('id', s.id, 'endpoint', s.endpoint, 'p256dh', s.p256dh, 'auth', s.auth)
                             order by s.last_seen_at desc)
@@ -185,7 +215,9 @@ revoke all on function public.claim_pending_notifications(integer) from public, 
 grant execute on function public.claim_pending_notifications(integer) to service_role;
 
 -- ---------------------------------------------------------------------------
--- finish_notification — record the push outcome. 'pending' re-queues for a retry.
+-- finish_notification — record the push outcome. 'pending' re-queues for a retry but
+-- KEEPS push_claimed_at, so claim_pending_notifications() ignores the row for 45 s
+-- (i.e. the drain run that just handed it back cannot pick it up again).
 -- ---------------------------------------------------------------------------
 create or replace function public.finish_notification(
   p_id     uuid,
@@ -201,8 +233,7 @@ begin
   update public.notifications
      set push_status = p_status,
          push_sent_at = case when p_status = 'sent' then now() else push_sent_at end,
-         push_error = case when p_status = 'sent' then null else left(p_error, 500) end,
-         push_claimed_at = case when p_status = 'pending' then null else push_claimed_at end
+         push_error = case when p_status = 'sent' then null else left(p_error, 500) end
    where id = p_id;
 end
 $$;

@@ -6,7 +6,7 @@ vi.hoisted(() => {
   process.env.NEXT_PUBLIC_APP_URL = "https://shuttle.example.com/";
 });
 
-import { MAX_PAYLOAD_BYTES, buildPayload, serializePayload, toSameOriginPath } from "@/lib/push/payload";
+import { MAX_PAYLOAD_BYTES, buildPayload, serializePayload, toSameOriginPath, truncateEscaped } from "@/lib/push/payload";
 
 const SW_LOGIC = path.resolve(__dirname, "../../src/lib/push/sw-logic.ts");
 const hasSwLogic = existsSync(SW_LOGIC);
@@ -75,6 +75,58 @@ describe("3 KB guard", () => {
   });
   it("leaves normal payloads alone", () => {
     expect(serializePayload(buildPayload(row))).toBe(JSON.stringify(buildPayload(row)));
+  });
+
+  describe("measures the JSON-escaped size, not the raw characters", () => {
+    const wireBytes = (p: unknown) => Buffer.byteLength(JSON.stringify(p), "utf8");
+
+    it.each([
+      ["newlines and quotes", '"line"\n'.repeat(2_000)],
+      ["backslashes", "C:\\path\\".repeat(2_000)],
+      ["control characters (6 bytes each once escaped)", "\u0001\u0002\u0003".repeat(3_000)],
+      ["tabs and carriage returns", "a\t\r\n".repeat(3_000)],
+      ["multi-byte text", "GH₵ 10 — Accra 🚌 ".repeat(1_000)],
+      ["a lone quote-heavy line", '"'.repeat(5_000)],
+    ])("%s", (_label, body) => {
+      const p = buildPayload({ ...row, body });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.body.endsWith("…")).toBe(true);
+      expect(p.body.length).toBeLessThan(body.length);
+      expect(p.title).toBe(row.title);
+      expect(serializePayload(p)).toBe(JSON.stringify(p));
+    });
+
+    it("uses the room it has: the escaped body lands close to the limit", () => {
+      const p = buildPayload({ ...row, body: '"\n'.repeat(5_000) });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(wireBytes(p)).toBeGreaterThan(MAX_PAYLOAD_BYTES - 8);
+    });
+
+    it("cuts an escape-heavy title and a huge url / tag too, and never loops forever", () => {
+      const p = buildPayload({
+        ...row,
+        title: '"\\'.repeat(5_000),
+        body: "\n".repeat(5_000),
+        url: `/app/${"x".repeat(5_000)}`,
+        collapse_tag: "\t".repeat(5_000),
+        icon: `/icons/${"i".repeat(2_000)}.png`,
+      });
+      expect(wireBytes(p)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+      expect(p.url).toBe("/app");
+      expect(p.icon).toBeUndefined();
+      expect(p.id).toBe(row.id);
+      expect(p.kind).toBe("trip_reminder");
+    });
+
+    it("truncateEscaped keeps whole characters and fits the escaped budget exactly", () => {
+      const s = "é\n".repeat(100); // 2 + 2 escaped bytes per pair
+      const out = truncateEscaped(s, 50);
+      expect(Buffer.byteLength(JSON.stringify(out), "utf8") - 2).toBeLessThanOrEqual(50);
+      expect(out.endsWith("…")).toBe(true);
+      expect(truncateEscaped("short", 100)).toBe("short");
+      expect(truncateEscaped("too long", 2)).toBe(""); // no room even for the ellipsis
+      expect(truncateEscaped("too long", 3)).toBe("…");
+    });
   });
 });
 

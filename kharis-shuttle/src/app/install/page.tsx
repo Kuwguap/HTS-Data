@@ -5,15 +5,17 @@ import { CopyLinkButton, InstallGate } from "@/components/pwa/InstallGate";
 import { Card } from "@/components/ui/Card";
 import { List } from "@/components/ui/List";
 import { Row } from "@/components/ui/Row";
+import { APP_NAME } from "@/lib/constants";
 import { publicEnv } from "@/lib/env";
 
 export const metadata: Metadata = {
   title: "Install the app",
-  description: "Add Kharis Shuttle to your iPhone or Android home screen to get departure reminders.",
+  description: `Add ${APP_NAME} to your iPhone or Android home screen to get departure reminders.`,
 };
 
 export default function InstallPage() {
-  const appUrl = publicEnv.appUrl || "https://shuttle.example.com";
+  // Only a real, configured URL is worth sharing; no placeholder when it is unset.
+  const appUrl = publicEnv.appUrl;
   return (
     <Page noTabs>
       <AppHeader title="Install the app" back="/" />
@@ -23,12 +25,14 @@ export default function InstallPage() {
         <Row leading={<span aria-hidden="true" style={{ fontSize: 22 }}>💺</span>} title="One-tap seat booking" subtitle="Pick your pickup point and pay the driver in cash." />
         <Row leading={<span aria-hidden="true" style={{ fontSize: 22 }}>🛰️</span>} title="Live bus position" subtitle="See where the shuttle is before you go downstairs." />
       </List>
-      <Card title="Share the link">
-        <p style={{ color: "var(--hint)", fontSize: "var(--fs-md)", margin: "0 0 12px", overflowWrap: "anywhere" }}>
-          <a href={appUrl}>{appUrl}</a>
-        </p>
-        <CopyLinkButton url={appUrl} />
-      </Card>
+      {appUrl ? (
+        <Card title="Share the link">
+          <p style={{ color: "var(--hint)", fontSize: "var(--fs-md)", margin: "0 0 12px", overflowWrap: "anywhere" }}>
+            <a href={appUrl}>{appUrl}</a>
+          </p>
+          <CopyLinkButton url={appUrl} />
+        </Card>
+      ) : null}
     </Page>
   );
 }

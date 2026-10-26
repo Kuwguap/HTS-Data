@@ -776,6 +776,8 @@ export type Database = {
           ttl_seconds: number;
           urgency: string;
           collapse_tag: string | null;
+          /** Attempts so far INCLUDING this claim (1 on the first delivery attempt). */
+          push_attempts: number;
           subscriptions: Json;
         }[];
       };
@@ -808,6 +810,11 @@ export type Database = {
       /** "7:30 AM" in settings.timezone. */
       format_local_time: {
         Args: { p_at: string };
+        Returns: string;
+      };
+      /** Single-pass {placeholder} substitution of an arbitrary template string (service role). */
+      render_text: {
+        Args: { p_template: string; p_vars: Json };
         Returns: string;
       };
     };

@@ -168,10 +168,16 @@ describe("cancel_booking", () => {
     await assertCountersConsistent(c, t.id);
   });
 
-  it("is FORBIDDEN for another student but allowed for staff", async () => {
+  it("is FORBIDDEN for another student and for deactivated staff, allowed for active staff", async () => {
     const t = await makeTrip(c);
     const b = await book(c, IDS.s1, t.id);
     expect(await errorOf(c, "select cancel_booking($1, $2)", [IDS.s2, b.id])).toMatch(/^FORBIDDEN:/);
+    // a deactivated driver / admin is no longer staff
+    await c.query("update profiles set is_active = false where id = any($1::uuid[])", [[IDS.driver, IDS.admin]]);
+    expect(await errorOf(c, "select cancel_booking($1, $2, 'driver')", [IDS.driver, b.id])).toMatch(/^FORBIDDEN:/);
+    expect(await errorOf(c, "select cancel_booking($1, $2, 'admin')", [IDS.admin, b.id])).toMatch(/^FORBIDDEN:/);
+    expect(await scalar<string>(c, "select status from bookings where id = $1", [b.id])).toBe("confirmed");
+    await c.query("update profiles set is_active = true where id = any($1::uuid[])", [[IDS.driver, IDS.admin]]);
     expect(await errorOf(c, "select cancel_booking($1, $2, 'driver')", [IDS.driver, b.id])).toBe("");
     expect(await scalar<string>(c, "select status from bookings where id = $1", [b.id])).toBe("cancelled");
     expect(await errorOf(c, "select cancel_booking($1, $2)", [IDS.s1, "00000000-0000-4000-8000-000000000000"])).toMatch(
@@ -247,6 +253,60 @@ describe("set_booking_status / promote_waitlist", () => {
     expect(tr.confirmed_count).toBe(2);
     expect(tr.waitlist_count).toBe(1);
     expect(await scalar<number>(c, "select waitlist_position from bookings where id = $1", [w2.id])).toBe(1);
+    await assertCountersConsistent(c, t.id);
+  });
+
+  it("a newcomer cannot jump the waitlist after a no_show; promote_waitlist seats the earliest", async () => {
+    const t = await makeTrip(c, { capacity: 2 });
+    const b1 = await book(c, IDS.s1, t.id);
+    await book(c, IDS.s2, t.id);
+    const w1 = await book(c, IDS.s3, t.id); // waitlist 1
+    expect(w1.status).toBe("waitlisted");
+
+    // the driver marks s1 a no-show: a seat is free, but s3 is still waiting
+    await c.query("select set_booking_status($1, 'no_show', $2)", [b1.id, IDS.driver]);
+    let tr = await trip(c, t.id);
+    expect(tr.confirmed_count).toBe(1);
+    expect(tr.waitlist_count).toBe(1);
+
+    // a new rider (admin here) must queue BEHIND s3, not take the freed seat
+    const late = await book(c, IDS.admin, t.id);
+    expect(late.status).toBe("waitlisted");
+    expect(late.waitlist_position).toBe(2);
+    tr = await trip(c, t.id);
+    expect(tr.confirmed_count).toBe(1);
+    expect(tr.waitlist_count).toBe(2);
+    await assertCountersConsistent(c, t.id);
+
+    // the handler then calls promote_waitlist: the earliest waitlisted rider gets the seat
+    const promoted = await rows<BookingRow>(c, "select * from promote_waitlist($1)", [t.id]);
+    expect(promoted.map((p) => p.id)).toEqual([w1.id]);
+    expect(promoted[0]?.status).toBe("confirmed");
+    tr = await trip(c, t.id);
+    expect(tr.confirmed_count).toBe(2);
+    expect(tr.waitlist_count).toBe(1);
+    expect(await scalar<number>(c, "select waitlist_position from bookings where id = $1", [late.id])).toBe(1);
+    await assertCountersConsistent(c, t.id);
+
+    // once the waitlist is empty again, a free seat is handed out directly
+    await c.query("select cancel_booking($1, $2)", [IDS.admin, late.id]);
+    await c.query("update trips set seat_capacity = 3 where id = $1", [t.id]);
+    const direct = await book(c, IDS.admin, t.id);
+    expect(direct.status).toBe("confirmed");
+    await assertCountersConsistent(c, t.id);
+  });
+
+  it("a capacity raise with riders waiting still waitlists newcomers until promote_waitlist runs", async () => {
+    const t = await makeTrip(c, { capacity: 1 });
+    await book(c, IDS.s1, t.id);
+    const w1 = await book(c, IDS.s2, t.id); // waitlist 1
+    await c.query("update trips set seat_capacity = 2 where id = $1", [t.id]);
+    const late = await book(c, IDS.s3, t.id);
+    expect(late.status).toBe("waitlisted");
+    expect(late.waitlist_position).toBe(2);
+    const promoted = await rows<BookingRow>(c, "select * from promote_waitlist($1)", [t.id]);
+    expect(promoted.map((p) => p.id)).toEqual([w1.id]);
+    expect(await scalar<number>(c, "select waitlist_position from bookings where id = $1", [late.id])).toBe(1);
     await assertCountersConsistent(c, t.id);
   });
 

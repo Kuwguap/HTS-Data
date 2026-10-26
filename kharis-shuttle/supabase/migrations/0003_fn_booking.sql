@@ -10,6 +10,9 @@
 --   trips.confirmed_count = count(bookings where status in ('confirmed','boarded'))
 --   trips.waitlist_count  = count(bookings where status = 'waitlisted')
 --   waitlist_position     = 1..waitlist_count, dense, ordered by (position, created_at)
+-- Fairness rule: a new booking is confirmed only when a seat is free AND the waitlist is
+-- empty; otherwise it joins the end of the waitlist. Seats freed by no_show or a capacity
+-- raise are filled in order by promote_waitlist() (handlers call it right after).
 -- Locking order everywhere: trip row FOR UPDATE first, then booking rows.
 
 -- ---------------------------------------------------------------------------
@@ -153,7 +156,10 @@ begin
     raise exception 'PICKUP_INVALID: Pick a valid pickup point for this departure' using errcode = 'P0001';
   end if;
 
-  if v_trip.confirmed_count < v_trip.seat_capacity then
+  -- Fairness: while anyone is still waitlisted the trip counts as full, even if a seat
+  -- was just released (no_show, capacity raise, …), so a newcomer never jumps the queue.
+  -- Freed seats are handed to the waitlist in order by promote_waitlist() / cancel_booking().
+  if v_trip.confirmed_count < v_trip.seat_capacity and v_trip.waitlist_count = 0 then
     v_status := 'confirmed';
     v_position := null;
   else
@@ -195,7 +201,7 @@ revoke all on function public.book_seat(uuid, uuid, uuid, text, text) from publi
 grant execute on function public.book_seat(uuid, uuid, uuid, text, text) to service_role;
 
 -- ---------------------------------------------------------------------------
--- cancel_booking — by the owner or any staff member. Frees the seat and promotes
+-- cancel_booking — by the owner or any ACTIVE staff member. Frees the seat and promotes
 -- the oldest waitlisted rider. Returns {cancelled: row, promoted: row|null}.
 -- Idempotent: cancelling an already-cancelled booking returns it unchanged.
 -- p_by is informational ('self' | 'driver' | 'admin' | 'system').
@@ -222,7 +228,8 @@ begin
   end if;
 
   if v_booking.user_id is distinct from p_user_id then
-    select role into v_role from public.profiles where id = p_user_id;
+    -- Only ACTIVE staff may cancel someone else's booking.
+    select role into v_role from public.profiles where id = p_user_id and is_active;
     if v_role is null or v_role not in ('driver', 'admin') then
       raise exception 'FORBIDDEN: You can only cancel your own booking' using errcode = 'P0001';
     end if;
@@ -296,7 +303,11 @@ grant execute on function public.promote_waitlist(uuid) to service_role;
 --   boarded   : confirmed → boarded (seat kept); waitlisted → boarded (leaves the
 --               waitlist, takes a seat — the driver decides); no_show → boarded.
 --   no_show   : confirmed/boarded → no_show (seat released, NOT auto-promoted:
---               call promote_waitlist() if you want to fill it); waitlisted → no_show.
+--               the route handler calls promote_waitlist() right after and notifies
+--               the promoted riders; until then book_seat() keeps waitlisting newcomers
+--               while waitlist_count > 0, so nobody can jump the queue); waitlisted → no_show.
+--               The same applies when an admin raises seat_capacity: the handler calls
+--               promote_waitlist() after the update.
 --   confirmed : boarded → confirmed (undo), no_show/cancelled → confirmed (re-seat),
 --               waitlisted → confirmed (manual promotion).
 --   cancelled : delegates to cancel_booking (promotes the next waitlisted rider).

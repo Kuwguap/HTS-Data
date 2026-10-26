@@ -61,11 +61,12 @@ export function Button({
     .filter(Boolean)
     .join(" ");
   const isDisabled = Boolean(disabled || loading);
+  // The face is the drawn part; for size "sm" it is the 36px pill inside a 44px tap target (see .k-btn--sm).
   const content = (
-    <>
+    <span className="k-btn-face">
       {loading ? <Spinner size={size === "sm" ? 14 : 18} /> : null}
       <span>{children}</span>
-    </>
+    </span>
   );
 
   if (href) {

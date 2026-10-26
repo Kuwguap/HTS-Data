@@ -3,6 +3,11 @@
  * pushes each one to the recipient's active subscriptions and records the outcome
  * (finish_notification). Safe to run from several places at once — the claim is
  * `for update skip locked`, so the minute tick and an `after()` drain never fight.
+ *
+ * Attempt accounting: the claim bumps `push_attempts` and returns the bumped value.
+ * A row only "spends" that attempt when we actually tried to deliver it. Rows we hand
+ * back untouched (budget spent, claimed twice in one run, VAPID misconfiguration) get
+ * the attempt refunded (`handBack`), so a row can never fail without 5 real tries.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ClaimedSubscription, Database, FunctionReturns, PushStatus } from "@/lib/db.types";
@@ -39,7 +44,7 @@ export type DrainRowResult = {
 };
 
 export type DrainResult = {
-  /** Rows taken from the outbox this run. */
+  /** Rows taken from the outbox this run (a row claimed twice counts once). */
   claimed: number;
   /** Rows delivered to at least one device. */
   sent: number;
@@ -49,7 +54,7 @@ export type DrainResult = {
   skipped: number;
   /** Subscriptions the push service reported as gone (404/410) and we deleted. */
   gone: number;
-  /** Rows put back to `pending` for another attempt. */
+  /** Rows put back to `pending` for another attempt (including rows handed back unsent). */
   requeued: number;
   /** Successful device deliveries (a row can count several). */
   deliveries: number;
@@ -106,6 +111,17 @@ export function parseSubscriptions(value: unknown): ClaimedSubscription[] {
   return out;
 }
 
+/**
+ * 401/403 (or no VAPID keys at all) means *our* signing keys are wrong, not that the
+ * device is bad: the subscription keeps its fail_count and the row stays retryable
+ * so it goes out once the keys are fixed.
+ */
+export function isVapidRejection(r: SendResult): boolean {
+  if (r.ok) return false;
+  if (r.status === 401 || r.status === 403) return true;
+  return r.status === 0 && /vapid/i.test(r.error);
+}
+
 function summarise(results: SendResult[]): string {
   const counts = new Map<string, number>();
   for (const r of results) {
@@ -132,42 +148,101 @@ async function deleteSubscriptions(admin: Admin, ids: string[]): Promise<void> {
   if (error) console.error("[push] could not delete gone subscriptions:", error.message);
 }
 
-async function markSuccess(admin: Admin, ids: string[], nowIso: string): Promise<void> {
-  if (!ids.length) return;
-  const { error } = await admin
-    .from("push_subscriptions")
-    .update({ last_success_at: nowIso, fail_count: 0 })
-    .in("id", ids);
-  if (error) console.error("[push] could not record subscription success:", error.message);
+/**
+ * Per-subscription serialiser: every fail_count read-modify-write (and the reset on
+ * success) for one subscription id runs after the previous one for that id finished,
+ * so two rows for the same person in one run cannot lose an increment. Cross-process
+ * races remain (two drains at once) — acceptable; the SQL-side fix is noted in README.
+ */
+type SubscriptionLedger = {
+  chains: Map<string, Promise<void>>;
+  /** fail_count values this run has read or written, so a chained bump needs no re-read. */
+  failCounts: Map<string, number>;
+};
+
+function serialisePerId(ledger: SubscriptionLedger, id: string, fn: () => Promise<void>): Promise<void> {
+  const prev = ledger.chains.get(id) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  ledger.chains.set(id, next);
+  return next;
 }
 
-/** fail_count + 1 for each; disabled once it reaches SUBSCRIPTION_FAIL_LIMIT. */
-async function markFailure(admin: Admin, ids: string[], nowIso: string): Promise<void> {
-  if (!ids.length) return;
-  const { data, error } = await admin.from("push_subscriptions").select("id, fail_count").in("id", ids);
-  if (error) {
-    console.error("[push] could not read subscription fail counts:", error.message);
-    return;
-  }
+async function markSuccess(admin: Admin, ledger: SubscriptionLedger, ids: string[], nowIso: string): Promise<void> {
   await Promise.all(
-    (data ?? []).map(async (s) => {
-      const failCount = (s.fail_count ?? 0) + 1;
-      const { error: err } = await admin
-        .from("push_subscriptions")
-        .update({
-          fail_count: failCount,
-          ...(failCount >= SUBSCRIPTION_FAIL_LIMIT ? { disabled_at: nowIso } : {}),
-        })
-        .eq("id", s.id);
-      if (err) console.error("[push] could not bump subscription fail count:", err.message);
-    }),
+    ids.map((id) =>
+      serialisePerId(ledger, id, async () => {
+        const { error } = await admin
+          .from("push_subscriptions")
+          .update({ last_success_at: nowIso, fail_count: 0 })
+          .eq("id", id);
+        if (error) console.error("[push] could not record subscription success:", error.message);
+        else ledger.failCounts.set(id, 0);
+      }),
+    ),
   );
 }
 
-async function attemptsOf(admin: Admin, row: ClaimedRow): Promise<number> {
+/** fail_count + 1 for each; disabled once it reaches SUBSCRIPTION_FAIL_LIMIT. */
+async function markFailure(admin: Admin, ledger: SubscriptionLedger, ids: string[], nowIso: string): Promise<void> {
+  await Promise.all(
+    ids.map((id) =>
+      serialisePerId(ledger, id, async () => {
+        let current = ledger.failCounts.get(id);
+        if (current === undefined) {
+          const { data, error } = await admin.from("push_subscriptions").select("id, fail_count").eq("id", id).maybeSingle();
+          if (error) {
+            console.error("[push] could not read subscription fail count:", error.message);
+            return;
+          }
+          if (!data) return; // deleted meanwhile (gone on another row)
+          current = data.fail_count ?? 0;
+        }
+        const failCount = current + 1;
+        const { error: err } = await admin
+          .from("push_subscriptions")
+          .update({
+            fail_count: failCount,
+            ...(failCount >= SUBSCRIPTION_FAIL_LIMIT ? { disabled_at: nowIso } : {}),
+          })
+          .eq("id", id);
+        if (err) console.error("[push] could not bump subscription fail count:", err.message);
+        else ledger.failCounts.set(id, failCount);
+      }),
+    ),
+  );
+}
+
+/** The row's push_attempts after the claim bumped it; null when unknown. */
+async function attemptsOf(admin: Admin, row: ClaimedRow): Promise<number | null> {
   if (typeof row.push_attempts === "number") return row.push_attempts;
-  const { data } = await admin.from("notifications").select("push_attempts").eq("id", row.id).maybeSingle();
-  return data?.push_attempts ?? MAX_PUSH_ATTEMPTS;
+  const { data, error } = await admin.from("notifications").select("push_attempts").eq("id", row.id).maybeSingle();
+  if (error) {
+    console.error(`[push] could not read push_attempts for ${row.id}:`, error.message);
+    return null;
+  }
+  return typeof data?.push_attempts === "number" ? data.push_attempts : null;
+}
+
+/**
+ * Put a row back to `pending` without spending the attempt the claim charged for it
+ * (nothing was sent). Leaves push_claimed_at alone: claim_pending_notifications()
+ * ignores the row for its cooldown, so the next run picks it up, not this one.
+ */
+async function handBack(admin: Admin, row: ClaimedRow, reason: string): Promise<void> {
+  const attempts = await attemptsOf(admin, row);
+  const { error } = await admin
+    .from("notifications")
+    .update({
+      push_status: "pending",
+      push_error: reason.slice(0, 500),
+      ...(attempts === null ? {} : { push_attempts: Math.max(0, attempts - 1) }),
+    })
+    .eq("id", row.id);
+  if (error) {
+    console.error(`[push] could not hand back ${row.id}:`, error.message);
+    // Last resort: at least stop it sitting in `sending` for two minutes.
+    await finish(admin, row.id, "pending", reason);
+  }
 }
 
 type RowContext = {
@@ -175,10 +250,16 @@ type RowContext = {
   send: <T>(fn: () => Promise<T>) => Promise<T>;
   result: DrainResult;
   now: () => number;
+  ledger: SubscriptionLedger;
 };
 
+function recordHandBack(result: DrainResult, id: string, reason: string, subscriptions = 0): void {
+  result.requeued++;
+  result.rows.push({ id, status: "pending", delivered: 0, subscriptions, error: reason });
+}
+
 async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
-  const { admin, result } = ctx;
+  const { admin, result, ledger } = ctx;
   const nowIso = new Date(ctx.now()).toISOString();
   const subs = parseSubscriptions(row.subscriptions);
 
@@ -204,10 +285,12 @@ async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
   const goneIds: string[] = [];
   const failedIds: string[] = [];
   let retryable = false;
+  let vapidRejected = false;
   sends.forEach((r, i) => {
     const sub = subs[i]!;
     if (r.ok) okIds.push(sub.id);
     else if (r.gone) goneIds.push(sub.id);
+    else if (isVapidRejection(r)) vapidRejected = true; // our keys, not the device: no fail_count
     else {
       failedIds.push(sub.id);
       if (r.retryable) retryable = true;
@@ -216,8 +299,8 @@ async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
 
   await deleteSubscriptions(admin, goneIds);
   result.gone += goneIds.length;
-  await markSuccess(admin, okIds, nowIso);
-  await markFailure(admin, failedIds, nowIso);
+  await markSuccess(admin, ledger, okIds, nowIso);
+  await markFailure(admin, ledger, failedIds, nowIso);
   result.deliveries += okIds.length;
 
   const summary = summarise(sends);
@@ -234,8 +317,14 @@ async function processRow(row: ClaimedRow, ctx: RowContext): Promise<void> {
     record("skipped", 0, summary);
     return;
   }
+  if (vapidRejected) {
+    // Misconfigured VAPID keys: keep the row pending (attempt refunded) until the keys are fixed.
+    await handBack(admin, row, `vapid rejected (${summary})`);
+    recordHandBack(result, row.id, summary, subs.length);
+    return;
+  }
   if (retryable) {
-    const attempts = await attemptsOf(admin, row);
+    const attempts = (await attemptsOf(admin, row)) ?? MAX_PUSH_ATTEMPTS;
     if (attempts >= MAX_PUSH_ATTEMPTS) {
       await finish(admin, row.id, "failed", `gave up after ${attempts} attempts (${summary})`);
       result.failed++;
@@ -288,7 +377,10 @@ export async function drainOutbox(options: DrainOptions = {}): Promise<DrainResu
 
   const send = pLimit(concurrency);
   const rowLimit = pLimit(concurrency);
-  const ctx: RowContext = { admin, send, result, now };
+  const ctx: RowContext = { admin, send, result, now, ledger: { chains: new Map(), failCounts: new Map() } };
+
+  /** Ids this run already took, so a row handed back as `pending` is never re-sent by the same run. */
+  const seen = new Set<string>();
 
   while (elapsed() < budgetMs || result.batches === 0) {
     const { data, error } = await admin.rpc("claim_pending_notifications", { p_limit: limit });
@@ -299,16 +391,35 @@ export async function drainOutbox(options: DrainOptions = {}): Promise<DrainResu
     }
     const rows = (data ?? []) as ClaimedRow[];
     if (rows.length === 0) break;
-    result.claimed += rows.length;
+
+    const fresh: ClaimedRow[] = [];
+    const repeats: ClaimedRow[] = [];
+    for (const row of rows) {
+      if (seen.has(row.id)) repeats.push(row);
+      else {
+        seen.add(row.id);
+        fresh.push(row);
+      }
+    }
+    // A re-served row is handed back untouched (attempt refunded); it waits for the next run.
+    await Promise.all(
+      repeats.map((row) =>
+        rowLimit(async () => {
+          await handBack(admin, row, "already handled in this run");
+          recordHandBack(result, row.id, "reclaimed");
+        }),
+      ),
+    );
+    if (fresh.length === 0) break; // the outbox only has rows this run already dealt with
+    result.claimed += fresh.length;
 
     await Promise.all(
-      rows.map((row) =>
+      fresh.map((row) =>
         rowLimit(async () => {
           if (elapsed() >= budgetMs) {
-            // Out of time: hand the row straight back instead of leaving it `sending` for 2 min.
-            await finish(admin, row.id, "pending", "drain budget exhausted");
-            result.requeued++;
-            result.rows.push({ id: row.id, status: "pending", delivered: 0, subscriptions: 0, error: "budget" });
+            // Out of time: hand the row straight back (attempt refunded) instead of leaving it `sending`.
+            await handBack(admin, row, "drain budget exhausted");
+            recordHandBack(result, row.id, "budget");
             return;
           }
           try {

@@ -10,7 +10,7 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0001_types.sql` | pgcrypto (either schema), enums `user_role`, `trip_direction`, `trip_status`, `booking_status`, `pickup_request_status`, `push_status`, `notification_kind` |
 | `0002_tables.sql` | all tables + indexes, `updated_at` triggers, `handle_new_user()` (auth.users → profiles), `profiles_protect_role()` |
 | `0003_fn_booking.sql` | `book_seat`, `cancel_booking`, `promote_waitlist`, `set_booking_status` (+ internal `booking_promote_next`, `booking_renumber_waitlist`) |
-| `0004_fn_notify.sql` | `render_template`, `enqueue_notification`, `claim_pending_notifications`, `finish_notification`, `mark_notifications_read`, `format_fare`, `format_local_time` |
+| `0004_fn_notify.sql` | `render_text`, `render_template`, `enqueue_notification`, `claim_pending_notifications`, `finish_notification`, `mark_notifications_read`, `format_fare`, `format_local_time` |
 | `0005_fn_trips_tick.sql` | `local_now`, `materialize_trips`, `create_adhoc_trip`, `set_trip_status`, `run_tick` |
 | `0006_rls.sql` | `my_role()`, grants, RLS on every table |
 | `0007_realtime.sql` | `trip_locations` → `trips.last_*` + `realtime.send` broadcast on `trip:<id>`, publication membership, `realtime.messages` policy |
@@ -44,9 +44,12 @@ is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conf
    select vault.create_secret('<the CRON_SECRET from the app env>', 'cron_secret');
    ```
    `cron_tick()` runs `run_tick()` in SQL every minute regardless, then POSTs to `tick_url`
-   with `Authorization: Bearer <cron_secret>` (8 s timeout, failures only log a warning) so
-   the Node side drains the push outbox. To rotate: `select vault.update_secret(id, '<new>')
-   from vault.secrets where name = 'cron_secret'`.
+   with `Authorization: Bearer <cron_secret>` and body `{"source":"pg_cron","at":…}`
+   (8 s timeout, failures only log a warning) so the Node side drains the push outbox.
+   `run_tick()` is idempotent, but the Node route skips its own `rpc('run_tick')` when the
+   body says `source = 'pg_cron'` (the SQL side already ran it) and only drains the outbox;
+   a backup caller (cron-job.org, manual curl) sends no `source` and gets both halves.
+   To rotate: `select vault.update_secret(id, '<new>') from vault.secrets where name = 'cron_secret'`.
 6. Check it is alive: `select * from cron.job;` and `select * from tick_runs order by id desc limit 5;`.
    `cron.job_run_details` is pruned nightly at 03:00 (rows older than 7 days).
 
@@ -83,11 +86,17 @@ npx supabase gen types typescript --db-url "postgres://postgres@127.0.0.1:54329/
   so invalid transitions become 409 instead of 500.
 * **Counters**: `trips.confirmed_count` = bookings `confirmed` + `boarded`;
   `trips.waitlist_count` = `waitlisted`. Every function keeps them exact.
+* **Waitlist fairness**: `book_seat()` confirms a new rider only when a seat is free **and**
+  `waitlist_count = 0`; while anyone is waitlisted every newcomer joins the end of the
+  waitlist, even if a seat was just released. Seats freed by `no_show` or a capacity raise
+  are filled in order by `promote_waitlist()`.
 * `cancel_booking()` returns `{ cancelled, promoted }` — the handler should enqueue
   `booking_promoted` for `promoted` (SQL never sends booking_* notifications itself).
-* `set_booking_status(…, 'no_show')` frees the seat but does **not** auto-promote; call
-  `promote_waitlist(trip_id)` afterwards if you want the next rider in (it returns the
-  promoted rows to notify).
+  Only the owner or an **active** driver/admin may cancel (deactivated staff → `FORBIDDEN`).
+* `set_booking_status(…, 'no_show')` frees the seat but does **not** auto-promote; the
+  handler must call `promote_waitlist(trip_id)` right after (it returns the promoted rows
+  to notify). Likewise after an admin raises `trips.seat_capacity`: update, then
+  `promote_waitlist(trip_id)`.
 * `set_trip_status(…, 'cancelled')` leaves bookings untouched so the handler can notify
   `bookings where trip_id = … and status in ('confirmed','waitlisted')`.
 * `create_adhoc_trip()` starts in `boarding` when departure is within 15 min, and
@@ -96,14 +105,28 @@ npx supabase gen types typescript --db-url "postgres://postgres@127.0.0.1:54329/
 * `run_tick(p_now)` returns the `tick_runs` row; the Node drain may update
   `pushes_sent` / `pushes_failed` on it by id.
 * `claim_pending_notifications()` returns `subscriptions` as `[]` for users without an
-  active subscription → mark those `skipped` via `finish_notification`. Rows are retried
-  by passing `'pending'` to `finish_notification`; after 5 attempts they are left alone and
-  the tick marks them `failed`.
+  active subscription → mark those `skipped` via `finish_notification`. It also returns
+  `push_attempts` (already including the current claim). Rows are retried by passing
+  `'pending'` to `finish_notification`, which keeps `push_claimed_at`: a `pending` row is
+  only claimable again when `push_claimed_at` is null or older than 45 s, so a drain run
+  can never re-serve a row it just handed back (the retry happens on the next run). After
+  5 attempts rows are left alone and the tick marks them `failed`.
+* `render_template()` / `render_text()` substitute placeholders in a **single pass** over the
+  original template: a value containing `{message}` is emitted literally. Runs of spaces/tabs
+  collapse to one space; newlines are preserved. `enqueue_notification()` treats a null or
+  unknown `p_urgency` as `'normal'`.
+* **Reminder timing**: for scheduled trips (`schedule_time_id` set) `run_tick()` computes the
+  reminder moment at tick time as `departure_at − settings.reminder_lead_minutes`, so editing
+  the lead in settings applies to already-materialised trips; `trips.reminder_at` is only
+  authoritative for ad-hoc trips (null = no reminder).
 * Notification dedupe keys used by the tick: `daily:<date>:<user>`, `reminder:<trip>:<user>`,
   `nudge:<trip>:<user>`, `manifest:<trip>:<user>`, `pr_expired:<request>:<user>`.
 * **RLS**: clients can only read (see the matrix at the top of `0006_rls.sql`); the only
   client write is a user's own `profiles` row (`full_name`, `phone`, `room`,
   `reminders_enabled`, `onboarded_at`). `anon` can read nothing — the public landing page
-  must read today's times with the service-role client. `settings` is readable by every
-  signed-in user, including `signup_code`; keep that in mind (or move it to a private table
-  later).
+  must read today's times with the service-role client.
+* **`settings` is column-restricted for browser clients**: `authenticated` has select on
+  every column **except** `signup_code`, `default_driver_id` and `updated_by`. A browser
+  client must therefore never `.select('*')` on `settings` — it fails with `permission
+  denied` — and must list the columns it needs (`hostel_name, fare_pesewas, …`). Server code
+  reads `settings` with the service role and sees everything.

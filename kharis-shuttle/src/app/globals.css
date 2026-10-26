@@ -523,8 +523,55 @@ a {
     flex: 0 0 auto;
   }
 
+  /* ---------- hit areas ----------
+     Small visuals (28–36px) sit inside a ≥44px tap target. The element is the
+     target; its `.k-hit-face` child is the drawn part. The negative margin
+     equals (visual − 44) / 2, so the surrounding layout is exactly as if the
+     visual stood alone. */
+  .k-hit {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap);
+    min-height: var(--tap);
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .k-hit--36 {
+    margin: -4px;
+  }
+
+  .k-hit--32 {
+    margin: -6px;
+  }
+
+  .k-hit--28 {
+    margin: -8px;
+  }
+
+  /* Full-width controls that are only 36px / 32px tall. */
+  .k-hit--y36 {
+    margin: -4px 0;
+  }
+
+  .k-hit--y32 {
+    margin: -6px 0;
+  }
+
+  .k-hit-face {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+  }
+
   /* ---------- buttons ---------- */
   .k-btn {
+    --btn-bg: var(--accent);
+    --btn-ink: var(--on-accent);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -532,13 +579,21 @@ a {
     min-height: var(--tap);
     padding: 0 var(--space-4);
     border-radius: var(--radius-btn);
-    background: var(--accent);
-    color: var(--on-accent);
+    background: var(--btn-bg);
+    color: var(--btn-ink);
     font-size: var(--fs-md);
     font-weight: 600;
     width: 100%;
     transition: transform 120ms ease, opacity 120ms ease;
     user-select: none;
+  }
+
+  .k-btn-face {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
   }
 
   .k-btn:active {
@@ -557,23 +612,23 @@ a {
   }
 
   .k-btn--secondary {
-    background: var(--tone-blue-bg);
-    color: var(--accent-text);
+    --btn-bg: var(--tone-blue-bg);
+    --btn-ink: var(--accent-text);
   }
 
   .k-btn--ghost {
-    background: transparent;
-    color: var(--accent-text);
+    --btn-bg: transparent;
+    --btn-ink: var(--accent-text);
   }
 
   .k-btn--danger {
-    background: var(--danger-fill);
-    color: #ffffff;
+    --btn-bg: var(--danger-fill);
+    --btn-ink: #ffffff;
   }
 
   .k-btn--danger-soft {
-    background: var(--tone-red-bg);
-    color: var(--tone-red-ink);
+    --btn-bg: var(--tone-red-bg);
+    --btn-ink: var(--tone-red-ink);
   }
 
   .k-btn--pill {
@@ -582,10 +637,23 @@ a {
     padding: 0 18px;
   }
 
+  /* Small button: a 36px pill drawn by the face inside a 44px tap target
+     (negative vertical margin keeps rows at their height). */
   .k-btn--sm {
-    min-height: 36px;
+    min-height: var(--tap);
+    margin: -4px 0;
+    padding: 0;
+    background: transparent;
     font-size: var(--fs-sm);
+  }
+
+  .k-btn--sm .k-btn-face {
+    width: 100%;
+    min-height: 36px;
     padding: 0 14px;
+    border-radius: inherit;
+    background: var(--btn-bg);
+    color: var(--btn-ink);
   }
 
   .k-link {

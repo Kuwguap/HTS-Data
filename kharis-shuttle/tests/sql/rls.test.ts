@@ -65,6 +65,33 @@ describe("student", () => {
     });
   });
 
+  it("can read public settings columns but not signup_code / default_driver_id / updated_by", async () => {
+    await c.query("update settings set signup_code = 'KC-2026' where id = 1");
+    await as(c, { userId: IDS.s1 }, async (cx) => {
+      expect(await scalar<string>(cx, "select hostel_name from settings")).toBe("Kharis Courts Hostel");
+      const ok = await one<{ fare_pesewas: number; timezone: string; booking_cutoff_minutes: number }>(
+        cx,
+        "select fare_pesewas, timezone, booking_cutoff_minutes from settings where id = 1",
+      );
+      expect(ok).toEqual({ fare_pesewas: 1000, timezone: "Africa/Accra", booking_cutoff_minutes: 5 });
+      expect(await errorOf(cx, "select signup_code from settings")).toMatch(/permission denied/);
+      expect(await errorOf(cx, "select default_driver_id from settings")).toMatch(/permission denied/);
+      expect(await errorOf(cx, "select updated_by from settings")).toMatch(/permission denied/);
+      expect(await errorOf(cx, "select * from settings")).toMatch(/permission denied/);
+      // using the column in a predicate is a read too
+      expect(await errorOf(cx, "select id from settings where signup_code = 'KC-2026'")).toMatch(/permission denied/);
+    });
+    // staff are clients too: same column restriction
+    await as(c, { userId: IDS.admin }, async (cx) => {
+      expect(await errorOf(cx, "select signup_code from settings")).toMatch(/permission denied/);
+    });
+    // the service role sees it
+    await as(c, { role: "service_role" }, async (cx) => {
+      expect(await scalar<string>(cx, "select signup_code from settings")).toBe("KC-2026");
+    });
+    await c.query("update settings set signup_code = null where id = 1");
+  });
+
   it("cannot read push_subscriptions or login_attempts at all", async () => {
     await as(c, { userId: IDS.s1 }, async (cx) => {
       expect(await errorOf(cx, "select * from push_subscriptions")).toMatch(/permission denied/);

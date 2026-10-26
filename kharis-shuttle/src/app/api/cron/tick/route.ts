@@ -8,8 +8,19 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** Budget for the drain: the whole handler must finish inside maxDuration. */
-const DRAIN_BUDGET_MS = 55_000;
+/** The drain stops claiming once its budget is spent, but a push already in flight can still wait this long. */
+const SEND_TIMEOUT_MS = 10_000;
+/** Headroom for the response itself. */
+const SAFETY_MS = 2_000;
+
+/**
+ * Whatever is left of maxDuration once run_tick has finished, minus the socket timeout
+ * of a push started at the very end and a little safety: the handler must never be
+ * killed by the host while rows sit in `sending`.
+ */
+function drainBudgetMs(elapsedMs: number): number {
+  return Math.max(0, maxDuration * 1000 - SEND_TIMEOUT_MS - SAFETY_MS - Math.max(0, elapsedMs));
+}
 
 function bearerToken(request: Request): string {
   const header = request.headers.get("authorization") ?? "";
@@ -17,10 +28,23 @@ function bearerToken(request: Request): string {
   return match?.[1]?.trim() ?? "";
 }
 
+/** `source` from a JSON body (`{"source":"pg_cron"}` from cron_tick()); null for GET, no body or non-JSON. */
+async function bodySource(request: Request): Promise<string | null> {
+  if (request.method === "GET" || request.method === "HEAD") return null;
+  try {
+    const body: unknown = await request.json();
+    const source = body && typeof body === "object" ? (body as { source?: unknown }).source : undefined;
+    return typeof source === "string" ? source : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The minute tick. Called by pg_cron (via pg_net) and, as a backup, by any external
  * cron with `Authorization: Bearer <CRON_SECRET>`:
  *   1. rpc run_tick()   — materialise trips, enqueue reminders/nudges/manifests, expire things
+ *                         (skipped when the body says `source: "pg_cron"`: cron_tick() already ran it in SQL)
  *   2. drainOutbox()    — push every pending notification
  * Responds with both sets of counters so an uptime monitor can alert on failures.
  */
@@ -31,18 +55,28 @@ const handle = withHandler(async (request: Request) => {
     return fail(401, "UNAUTHENTICATED", "Unauthorized");
   }
 
-  const admin = createAdminClient();
   const startedAt = Date.now();
+  const source = await bodySource(request);
+  const admin = createAdminClient();
 
-  const { data: tick, error: tickError } = await admin.rpc("run_tick");
-  if (tickError) console.error("[tick] run_tick failed:", tickError.message);
+  let tick: unknown = null;
+  let tickError: { message: string } | null = null;
+  const ranTick = source !== "pg_cron";
+  if (ranTick) {
+    const res = await admin.rpc("run_tick");
+    tick = res.data ?? null;
+    tickError = res.error ? { message: res.error.message } : null;
+    if (tickError) console.error("[tick] run_tick failed:", tickError.message);
+  }
 
   // Drain even when the tick failed: rows enqueued by the app still need delivering.
-  const push = await drainOutbox({ admin, budgetMs: DRAIN_BUDGET_MS });
+  const push = await drainOutbox({ admin, budgetMs: drainBudgetMs(Date.now() - startedAt) });
 
   const body = {
     ok: !tickError,
-    tick: tick ?? null,
+    source,
+    tick_ran: ranTick,
+    tick,
     tick_error: tickError ? tickError.message : null,
     push: {
       claimed: push.claimed,

@@ -18,7 +18,22 @@ export type BannerProps = {
 
 /** Slim tinted strip for warnings and hints ("Reminders are off"). */
 export function Banner({ tone = "amber", icon, children, action, onDismiss, className }: BannerProps) {
-  const actionStyle = { fontWeight: 700, color: "inherit", textDecoration: "underline", textUnderlineOffset: 3, whiteSpace: "nowrap" as const, minHeight: 32, display: "inline-flex", alignItems: "center" };
+  // 44px tall tap target; the −6px vertical margin keeps the strip at the height a 32px control gave it.
+  const actionStyle = {
+    fontWeight: 700,
+    color: "inherit",
+    textDecoration: "underline",
+    textUnderlineOffset: 3,
+    whiteSpace: "nowrap" as const,
+    minHeight: 44,
+    minWidth: 44,
+    margin: "-6px 0",
+    padding: "0 2px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flex: "0 0 auto",
+  };
   return (
     <div className={["k-banner", tone !== "amber" ? `k-banner--${tone}` : "", className ?? ""].filter(Boolean).join(" ")} role="status">
       {icon ? <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1 }}>{icon}</span> : null}
@@ -35,8 +50,10 @@ export function Banner({ tone = "amber", icon, children, action, onDismiss, clas
         )
       ) : null}
       {onDismiss ? (
-        <button type="button" onClick={onDismiss} aria-label="Dismiss" style={{ color: "inherit", opacity: 0.7, minWidth: 28, minHeight: 28 }}>
-          ✕
+        <button type="button" onClick={onDismiss} aria-label="Dismiss" className="k-hit k-hit--28" style={{ color: "inherit", opacity: 0.7 }}>
+          <span className="k-hit-face" aria-hidden="true" style={{ width: 28, height: 28 }}>
+            ✕
+          </span>
         </button>
       ) : null}
     </div>

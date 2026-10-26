@@ -69,24 +69,22 @@ export function Sheet({ open, onClose, title, children, footer, hideClose }: She
               {title}
             </h2>
             {!hideClose ? (
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label="Close"
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 999,
-                  background: "var(--surface-3)",
-                  color: "var(--text-2)",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                ✕
+              <button type="button" onClick={onClose} aria-label="Close" className="k-hit k-hit--32">
+                <span
+                  className="k-hit-face"
+                  aria-hidden="true"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 999,
+                    background: "var(--surface-3)",
+                    color: "var(--text-2)",
+                    fontSize: 15,
+                    fontWeight: 700,
+                  }}
+                >
+                  ✕
+                </span>
               </button>
             ) : null}
           </div>

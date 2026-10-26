@@ -3,16 +3,17 @@
  * module load), but every function here expects `window`.
  */
 import { detectPlatform } from "@/lib/geo";
-import { subscriptionBody } from "@/lib/push/sw-logic";
+import { subscriptionBody, urlBase64ToUint8Array } from "@/lib/push/sw-logic";
 
-/** VAPID public key (URL-safe base64) → the `applicationServerKey` bytes. */
-export function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(b64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
+export { urlBase64ToUint8Array };
+
+/**
+ * Whether /sw.js should be registered in this build. Off in development (the
+ * worker would cache-first Turbopack chunks and serve stale code); opt in
+ * locally with NEXT_PUBLIC_SW_DEV=1. Both values are inlined at build time.
+ */
+export function serviceWorkerEnabled(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.NEXT_PUBLIC_SW_DEV === "1";
 }
 
 function ua(): string {
