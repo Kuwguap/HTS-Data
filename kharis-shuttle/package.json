@@ -1,0 +1,62 @@
+{
+  "name": "kharis-shuttle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kharis Courts Hostel shuttle — PWA for seat reservations, reminders and live bus tracking",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --project unit",
+    "test:sql": "vitest run --project sql",
+    "test:e2e": "playwright test",
+    "db:up": "bash scripts/local-pg.sh up",
+    "db:down": "bash scripts/local-pg.sh down",
+    "db:reset": "bash scripts/local-pg.sh reset",
+    "vapid": "tsx scripts/gen-vapid.ts",
+    "seed:admin": "tsx scripts/seed-admin.ts",
+    "icons:build": "tsx scripts/build-icons.ts"
+  },
+  "dependencies": {
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.118.0",
+    "leaflet": "1.9.4",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "web-push": "3.6.7",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/leaflet": "1.9.22",
+    "@types/node": "^22.19.0",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/web-push": "3.6.4",
+    "dotenv": "^17.2.0",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "16.4.3",
+    "pg": "8.23.1",
+    "sharp": "0.35.5",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.23.15",
+    "typescript": "^5.9.0",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@tailwindcss/oxide",
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

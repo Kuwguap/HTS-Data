@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# tests
+playwright-report/
+test-results/
+coverage/
+
+# local postgres + scratch
+.local-pg/
+*.log
+
+# icon sources downloaded from Higgsfield (keep the built webp/png in public/icons)
+assets/icon-sources/*.png
+
+# visual verification screenshots
+.ui-shots/
