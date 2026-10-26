@@ -102,11 +102,12 @@ function pickClickClient(list, url, origin) {
   return target;
 }
 
+// Stored (current) key first: the old subscription may carry a rotated VAPID key.
 function planResubscribe(event, storedKey) {
   if (event.newSubscription) return { action: "post", subscription: event.newSubscription };
+  if (storedKey) return { action: "subscribe", key: storedKey };
   const oldKey = event.oldSubscription && event.oldSubscription.options ? event.oldSubscription.options.applicationServerKey : null;
   if (oldKey) return { action: "subscribe", key: oldKey };
-  if (storedKey) return { action: "subscribe", key: storedKey };
   return { action: "none", reason: "no-key" };
 }
 

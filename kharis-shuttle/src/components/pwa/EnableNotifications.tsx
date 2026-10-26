@@ -39,7 +39,13 @@ export function EnableNotifications({ onEnabled, testAfterEnable = true, allowDi
     }
     toast("✅ Reminders are on", { tone: "green" });
     onEnabled?.();
-    if (testAfterEnable) await push.sendTest();
+    if (testAfterEnable) {
+      // Subscribing worked; the test says whether the push service actually delivers here.
+      const test = await push.sendTest();
+      toast(test.ok ? "📨 Test sent — check your notifications" : `⚠️ ${test.error ?? "Could not send a test — try again"}`, {
+        tone: test.ok ? "green" : "amber",
+      });
+    }
   };
 
   const test = async () => {

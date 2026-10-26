@@ -141,8 +141,9 @@ export type ResubscribePlan =
 /**
  * What to do on `pushsubscriptionchange`:
  * 1. the browser already made a new subscription → just POST it;
- * 2. else re-subscribe with the old subscription's key, or the key the page
- *    stored in the meta cache (the old subscription can be null on iOS);
+ * 2. else re-subscribe with the key the page stored in the meta cache (the
+ *    current VAPID key — the old subscription may carry a rotated one), falling
+ *    back to the old subscription's key (the old subscription can be null on iOS);
  * 3. no key anywhere → nothing (the page re-subscribes on next launch).
  */
 export function planResubscribe(
@@ -153,9 +154,9 @@ export function planResubscribe(
   storedKey: string | null | undefined,
 ): ResubscribePlan {
   if (event.newSubscription) return { action: "post", subscription: event.newSubscription };
+  if (storedKey) return { action: "subscribe", key: storedKey };
   const oldKey = event.oldSubscription && event.oldSubscription.options ? event.oldSubscription.options.applicationServerKey : null;
   if (oldKey) return { action: "subscribe", key: oldKey };
-  if (storedKey) return { action: "subscribe", key: storedKey };
   return { action: "none", reason: "no-key" };
 }
 

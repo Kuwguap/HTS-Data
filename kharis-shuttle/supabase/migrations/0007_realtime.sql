@@ -73,7 +73,9 @@ begin
 end
 $$;
 
--- Old-row data for postgres_changes DELETE/UPDATE filtering under RLS (small tables only).
+-- Old-row data for postgres_changes DELETE/UPDATE filtering under RLS, and so UPDATE
+-- events carry `old` (clients compare old/new and ignore the throttled last_* columns).
+alter table public.trips           replica identity full;
 alter table public.bookings        replica identity full;
 alter table public.pickup_requests replica identity full;
 alter table public.notifications   replica identity full;

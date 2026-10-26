@@ -9,11 +9,8 @@ import { Card } from "@/components/ui/Card";
 import { Field } from "@/components/ui/Field";
 import { ApiClientError, api } from "@/lib/api-client";
 import type { PublicProfile } from "@/lib/auth/session";
+import { PIN_RE, USERNAME_RE, safeNextPath } from "@/lib/validation/common";
 
-// Mirrors USERNAME_RE / PIN_RE in lib/auth/pin.ts, which cannot be imported here
-// because that module pulls in node:crypto.
-const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
-const PIN_RE = /^\d{4,6}$/;
 const USERNAME_HINT = "3–20 letters, numbers or _";
 
 export type RegisterFormProps = {
@@ -21,14 +18,20 @@ export type RegisterFormProps = {
   requiresCode: boolean;
   hostelName: string;
   enquiryPhone?: string | null;
+  /** In-app path to land on after onboarding (from /login?next=…). Re-validated here; unsafe values are dropped. */
+  next?: string;
 };
 
 type RegisterResponse = { profile: PublicProfile; home: string };
 
 type Errors = Partial<Record<"full_name" | "username" | "pin" | "pin_confirm" | "phone" | "room" | "signup_code", string>>;
 
-export function RegisterForm({ requiresCode, hostelName, enquiryPhone }: RegisterFormProps) {
+export function RegisterForm({ requiresCode, hostelName, enquiryPhone, next: rawNext }: RegisterFormProps) {
   const router = useRouter();
+  const next = safeNextPath(rawNext, "") || undefined;
+  // The code field is hidden unless the page said a code is required — or the API
+  // asked for one (the admin set a code after this page was rendered).
+  const [codeVisible, setCodeVisible] = useState(requiresCode);
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [pin, setPin] = useState("");
@@ -51,7 +54,7 @@ export function RegisterForm({ requiresCode, hostelName, enquiryPhone }: Registe
     if (!usernameOk) next.username = USERNAME_HINT;
     if (!pinOk) next.pin = "PIN must be 4–6 digits";
     if (!pinsMatch) next.pin_confirm = "PINs don't match";
-    if (requiresCode && !signupCode.trim()) next.signup_code = "Enter the hostel code";
+    if (codeVisible && !signupCode.trim()) next.signup_code = "Enter the hostel code";
     return next;
   };
 
@@ -70,15 +73,23 @@ export function RegisterForm({ requiresCode, hostelName, enquiryPhone }: Registe
         pin,
         phone: phone.trim() || null,
         room: room.trim() || null,
-        signup_code: requiresCode ? signupCode.trim() : null,
+        signup_code: codeVisible ? signupCode.trim() : null,
       });
-      router.replace("/welcome");
+      // /welcome forwards `next` once onboarding is done.
+      router.replace(next ? `/welcome?next=${encodeURIComponent(next)}` : "/welcome");
     } catch (err) {
       if (err instanceof ApiClientError) {
         if (err.code === "USERNAME_TAKEN") {
           setErrors({ username: err.message });
         } else if (err.code === "SIGNUP_CODE") {
-          setErrors({ signup_code: err.message });
+          if (codeVisible) {
+            setErrors({ signup_code: err.message });
+          } else {
+            // The field was hidden, so an inline error would be invisible: explain in the banner and reveal it.
+            setCodeVisible(true);
+            setErrors({});
+            setError(err.message);
+          }
         } else if (err.code === "VALIDATION") {
           const next: Errors = {
             full_name: err.fieldError("full_name"),

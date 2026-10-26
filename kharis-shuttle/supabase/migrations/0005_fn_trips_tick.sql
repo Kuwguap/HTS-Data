@@ -209,7 +209,24 @@ grant execute on function public.set_trip_status(uuid, public.trip_status, uuid,
 -- `where … is null` update or a dedupe key, so running it 50 times at the same
 -- p_now, or minutes late, never double-sends. Called by pg_cron (cron_tick) and by
 -- POST /api/cron/tick. Returns the tick_runs audit row.
+--
+-- Per-trip dedupe prefixes are '<kind>:<trip_id>:<departure epoch seconds>' (see
+-- trip_dedupe_prefix), so an admin who moves departure_at and nulls the *_sent_at flag
+-- gets the reminder / nudge / manifest re-sent for the new time, while a plain reset
+-- without a time change still cannot double-send to the same recipient.
 -- ---------------------------------------------------------------------------
+create or replace function public.trip_dedupe_prefix(p_kind text, p_trip_id uuid, p_departure_at timestamptz)
+returns text
+language sql
+immutable
+set search_path = public, extensions
+as $$
+  select p_kind || ':' || p_trip_id::text || ':' || extract(epoch from p_departure_at)::bigint::text;
+$$;
+
+revoke all on function public.trip_dedupe_prefix(text, uuid, timestamptz) from public, anon, authenticated;
+grant execute on function public.trip_dedupe_prefix(text, uuid, timestamptz) to service_role;
+
 create or replace function public.run_tick(p_now timestamptz default now())
 returns public.tick_runs
 language plpgsql
@@ -335,7 +352,7 @@ begin
           'trip_id', v_trip.id
         ),
         '/app/trips/' || v_trip.id::text,
-        'reminder:' || v_trip.id::text,
+        public.trip_dedupe_prefix('reminder', v_trip.id, v_trip.departure_at),
         greatest(least(extract(epoch from (v_trip.departure_at - v_now))::integer, 3600), 60),
         'normal',
         'trip:' || v_trip.id::text
@@ -380,7 +397,7 @@ begin
             'trip_id', v_trip.id
           ),
           '/app/trips/' || v_trip.id::text,
-          'nudge:' || v_trip.id::text,
+          public.trip_dedupe_prefix('nudge', v_trip.id, v_trip.departure_at),
           greatest(extract(epoch from (v_trip.departure_at - v_now))::integer, 60),
           'high',
           'trip:' || v_trip.id::text

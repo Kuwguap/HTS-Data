@@ -66,8 +66,13 @@ describe("sw-logic: planResubscribe", () => {
       subscription: sub,
     });
   });
-  it("re-subscribes with the old key, else the stored key", () => {
+  it("re-subscribes with the stored (current) key, else the old subscription's key", () => {
+    // The page stores the key the server uses now; the old subscription may hold a rotated one.
     expect(planResubscribe({ newSubscription: null, oldSubscription: { options: { applicationServerKey: key } } }, "stored")).toEqual({
+      action: "subscribe",
+      key: "stored",
+    });
+    expect(planResubscribe({ newSubscription: null, oldSubscription: { options: { applicationServerKey: key } } }, null)).toEqual({
       action: "subscribe",
       key,
     });
@@ -235,9 +240,17 @@ describe("public/sw.js mirrors sw-logic", () => {
     expect(JSON.parse((sw.fetch.mock.calls[0] as unknown as [string, { body: string }])[1].body)).toMatchObject({ endpoint: "https://push/resubscribed" });
   });
 
-  it("pushsubscriptionchange: prefers the old subscription's key and does nothing without any key", async () => {
-    const sw = loadSw();
+  it("pushsubscriptionchange: prefers the stored key over the old subscription's, falls back to the old key, and does nothing without any key", async () => {
     const oldKey = new Uint8Array([9, 9]);
+
+    const stored = loadSw();
+    await stored.fire("message", { data: { type: VAPID_KEY_MESSAGE, key: "AQID" } });
+    await stored.fire("pushsubscriptionchange", { newSubscription: null, oldSubscription: { options: { applicationServerKey: oldKey } } });
+    expect(stored.registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+    const arg = (stored.registration.pushManager.subscribe.mock.calls[0] as unknown as [{ applicationServerKey: Uint8Array }])[0];
+    expect(Array.from(arg.applicationServerKey)).toEqual([1, 2, 3]);
+
+    const sw = loadSw();
     await sw.fire("pushsubscriptionchange", { newSubscription: null, oldSubscription: { options: { applicationServerKey: oldKey } } });
     expect(sw.registration.pushManager.subscribe).toHaveBeenCalledWith({ userVisibleOnly: true, applicationServerKey: oldKey });
 

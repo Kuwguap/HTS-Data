@@ -31,7 +31,8 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- render_text — single-pass {placeholder} substitution (mirrors src/lib/notify/template.ts).
+-- render_text — single-pass {placeholder} substitution (mirrors renderTemplate() in
+-- src/lib/data/template-defaults.ts).
 -- The ORIGINAL template is tokenised once into placeholders / literal runs, so a value
 -- that itself contains '{message}' is emitted verbatim and never re-expanded.
 -- Unknown placeholders → ''. Runs of spaces/tabs collapse to one space; newlines are kept.

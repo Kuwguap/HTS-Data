@@ -9,9 +9,10 @@ import { Card } from "@/components/ui/Card";
 import { Field } from "@/components/ui/Field";
 import { ApiClientError, api } from "@/lib/api-client";
 import type { PublicProfile } from "@/lib/auth/session";
+import { safeNextPath } from "@/lib/validation/common";
 
 export type LoginFormProps = {
-  /** Safe in-app path to return to after login (already validated by the page). */
+  /** In-app path to return to after login. Validated again here (same-origin only); unsafe values are dropped. */
   next?: string;
   /** Show the "account deactivated" notice (from /login?deactivated=1). */
   deactivated?: boolean;
@@ -21,8 +22,10 @@ export type LoginFormProps = {
 
 type LoginResponse = { profile: PublicProfile; home: string };
 
-export function LoginForm({ next, deactivated, enquiryPhone }: LoginFormProps) {
+export function LoginForm({ next: rawNext, deactivated, enquiryPhone }: LoginFormProps) {
   const router = useRouter();
+  // Never trust the prop blindly: only a same-origin absolute path survives.
+  const next = safeNextPath(rawNext, "") || undefined;
   const [username, setUsername] = useState("");
   const [pin, setPin] = useState("");
   const [showPin, setShowPin] = useState(false);
@@ -39,9 +42,10 @@ export function LoginForm({ next, deactivated, enquiryPhone }: LoginFormProps) {
     try {
       const res = await api.post<LoginResponse>("/api/auth/login", { username: username.trim().toLowerCase(), pin });
       if (!res.profile.onboarded_at) {
-        router.replace("/welcome");
+        // /welcome forwards `next` once onboarding is done.
+        router.replace(next ? `/welcome?next=${encodeURIComponent(next)}` : "/welcome");
       } else {
-        router.replace(next ?? res.home);
+        router.replace(next ?? safeNextPath(res.home));
       }
     } catch (err) {
       if (err instanceof ApiClientError) {
