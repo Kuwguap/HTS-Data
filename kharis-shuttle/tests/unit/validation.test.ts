@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loginSchema, registerSchema, changePinSchema, updateProfileSchema } from "@/lib/validation/auth";
+import { safeNextPath } from "@/lib/validation/common";
 import { createBookingSchema, createPickupRequestSchema, respondPickupRequestSchema } from "@/lib/validation/bookings";
 import { announceTripSchema, locationBatchSchema } from "@/lib/validation/driver";
 import { pushSubscribeSchema } from "@/lib/validation/push";
@@ -159,5 +160,18 @@ describe("admin schemas", () => {
     expect(settingsPatchSchema.safeParse({ daily_announcement_time: "6am" }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ reminder_lead_minutes: 1 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ fare_pesewas: 1000 }).success).toBe(true);
+  });
+});
+
+describe("safeNextPath (post-login redirect guard)", () => {
+  it("keeps same-origin paths with query and hash", () => {
+    expect(safeNextPath("/app/trips/1?x=1")).toBe("/app/trips/1?x=1");
+    expect(safeNextPath("/app#top")).toBe("/app#top");
+  });
+  it("falls back for anything that could leave the origin", () => {
+    for (const bad of ["/\\evil.com", "//evil.com", "http://evil.com", "javascript:alert(1)", "", null, undefined, "app", "/ app"]) {
+      expect(safeNextPath(bad)).toBe("/app");
+    }
+    expect(safeNextPath("//evil.com", "/driver")).toBe("/driver");
   });
 });

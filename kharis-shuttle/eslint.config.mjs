@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "node_modules/**",
     "playwright-report/**",
     "test-results/**",
+    // session scratch (gitignored): screenshot helpers and orchestration scripts
+    ".ui-shots/**",
+    ".workflows/**",
   ]),
   {
     rules: {

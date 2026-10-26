@@ -54,9 +54,11 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
       typeof window !== "undefined" &&
       !window.location.pathname.startsWith("/login")
     ) {
-      // Session gone (not a wrong PIN): send them to log in, remembering where they were.
+      // Session gone (not a wrong PIN): full navigation to the login page (drops any
+      // client state), remembering where they were. Absolute URL on purpose: this is a
+      // plain module, not a component, so there is no router to push to.
       const next = encodeURIComponent(window.location.pathname + window.location.search);
-      window.location.assign(`/login?next=${next}`);
+      window.location.assign(new URL(`/login?next=${next}`, window.location.origin).href);
     }
     throw new ApiClientError(
       res.status,

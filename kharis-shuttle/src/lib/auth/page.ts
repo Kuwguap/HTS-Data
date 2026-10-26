@@ -37,14 +37,6 @@ export async function requirePageAuth(opts: PageAuthOptions = {}): Promise<AuthC
   return ctx;
 }
 
-/** For /login and /register: send signed-in users straight to their home. */
-export async function redirectIfSignedIn(): Promise<void> {
-  const ctx = await getAuthContext();
-  if (ctx && ctx.profile.is_active) {
-    redirect(ctx.profile.onboarded_at ? HOME_BY_ROLE[ctx.profile.role] : "/welcome");
-  }
-}
-
 export function homeFor(role: UserRole): string {
   return HOME_BY_ROLE[role];
 }
