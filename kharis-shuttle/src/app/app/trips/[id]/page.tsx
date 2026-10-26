@@ -143,7 +143,7 @@ export default async function TripDetailPage({ params }: { params: Promise<{ id:
           </Banner>
         ) : null}
         {trip.status === "scheduled" || moving ? (
-          <Button variant="secondary" href={`/app/request?trip=${trip.id}`}>
+          <Button variant="secondary" href={`/app/request?trip=${trip.id}&direction=${trip.direction}`}>
             ✋ Request a pickup
           </Button>
         ) : null}

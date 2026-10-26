@@ -3,6 +3,7 @@ import { AppHeader } from "@/components/layout/AppHeader";
 import { Page } from "@/components/layout/Page";
 import { TripRow } from "@/components/trips/TripRow";
 import { TripsAutoRefresh } from "@/components/trips/TripsAutoRefresh";
+import { isWaitlistOnly } from "@/components/trips/seats";
 import { Button, Caption, Card, Empty, HeroCard, HeroPill, List, LiveChip, StatTile } from "@/components/ui";
 import { requirePageAuth } from "@/lib/auth/page";
 import { getActivePickupLocations, getSettings } from "@/lib/data/settings";
@@ -66,7 +67,7 @@ export default async function TodayPage() {
     } else if (nextBooking) {
       heroCta = nextBooking.status === "waitlisted" ? `⏳ Waitlist #${nextBooking.waitlist_position ?? "?"}` : "✅ Your seat is reserved";
     } else if (nextOpen) {
-      heroCta = seatsLeft(next) > 0 ? "🎟️ Tap to book a seat" : "⏳ Full · tap to join the waitlist";
+      heroCta = !isWaitlistOnly(next) ? "🎟️ Tap to book a seat" : seatsLeft(next) > 0 ? "⏳ Tap to join the waitlist" : "⏳ Full · tap to join the waitlist";
     } else {
       heroCta = `⏱ Leaves ${formatCountdown(next.departure_at, now)}`;
     }
@@ -85,7 +86,7 @@ export default async function TodayPage() {
         <HeroCard
           tone={nextLive ? "green" : "blue"}
           title={next.service_date === today ? `Next shuttle ${formatTime(next.departure_at, tz)}` : `Next shuttle ${formatDayTime(next.departure_at, now, tz)}`}
-          subtitle={`${seatsLeft(next)} seats left · ${fareLine(settings)} · to ${next.destination_label}`}
+          subtitle={`${seatsLeft(next)} seats left${next.waitlist_count > 0 ? ` · ${next.waitlist_count} waiting` : ""} · ${fareLine(settings)} · to ${next.destination_label}`}
           art="bus"
           cta={heroCta ? <HeroPill>{heroCta}</HeroPill> : undefined}
           href={heroHref}

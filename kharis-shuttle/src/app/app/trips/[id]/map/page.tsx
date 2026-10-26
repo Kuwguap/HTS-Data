@@ -74,7 +74,7 @@ export default async function TripMapPage({ params }: { params: Promise<{ id: st
             ) : null}
           </div>
           <div style={{ marginTop: 12 }}>
-            <Button variant="secondary" href={`/app/request?trip=${trip.id}`}>
+            <Button variant="secondary" href={`/app/request?trip=${trip.id}&direction=${trip.direction}`}>
               ✋ Request pickup here
             </Button>
           </div>

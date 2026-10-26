@@ -19,6 +19,7 @@ export default async function PickupRequestPage({ params }: { params: Promise<{ 
   if (!request) notFound();
 
   const { pickup_location, trip, ...plain } = request;
+  const now = new Date();
 
   return (
     <Page>
@@ -31,6 +32,7 @@ export default async function PickupRequestPage({ params }: { params: Promise<{ 
         tripTime={trip ? formatTime(trip.departure_at, settings.timezone) : null}
         tripId={trip?.id ?? null}
         timeZone={settings.timezone}
+        nowMs={now.getTime()}
       />
     </Page>
   );

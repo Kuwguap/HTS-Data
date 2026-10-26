@@ -11,8 +11,8 @@ const CUSTOM = "__custom__";
 
 export type PickupRequestFormProps = {
   pickupLocations: PickupLocation[];
-  /** Today's trips the rider may attach the request to (optional). */
-  trips: Array<Pick<Trip, "id" | "departure_at" | "direction" | "status">>;
+  /** Trips the rider may attach the request to (optional); `day` marks one that is not today ("Tomorrow"). */
+  trips: Array<Pick<Trip, "id" | "departure_at" | "direction" | "status"> & { day?: string }>;
   defaultTripId?: string | null;
   defaultDirection?: TripDirection;
   timeZone: string;
@@ -156,6 +156,7 @@ export function PickupRequestForm({ pickupLocations, trips, defaultTripId, defau
           <option value="">Next available shuttle</option>
           {tripOptions.map((t) => (
             <option key={t.id} value={t.id}>
+              {t.day ? `${t.day}, ` : ""}
               {formatTime(t.departure_at, timeZone)}
               {t.status === "boarding" ? " · boarding" : t.status === "departed" ? " · on the way" : ""}
             </option>

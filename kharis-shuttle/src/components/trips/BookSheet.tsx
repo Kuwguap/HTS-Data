@@ -7,6 +7,7 @@ import type { Booking, PickupLocation, Trip } from "@/lib/db.types";
 import { formatDayTime } from "@/lib/time";
 import { directionShort, seatsLeft } from "@/lib/trips";
 import { Art, Button, Checkbox, Field, List, Row, Sheet, useToast, type ButtonSize } from "@/components/ui";
+import { isWaitlistOnly } from "./seats";
 
 export type BookSheetTrip = Pick<
   Trip,
@@ -51,7 +52,9 @@ export function BookSheet({ trip, pickupLocations, fare, timeZone, size = "pill"
   const [pickupId, setPickupId] = useState<string | null>(null);
   const chosen = pickupId ?? options[0]?.id ?? null;
 
-  const full = seatsLeft(trip) <= 0;
+  // book_seat() waitlists newcomers whenever someone is already waiting, not only when every seat is taken.
+  const full = isWaitlistOnly(trip);
+  const noSeats = seatsLeft(trip) <= 0;
   const triggerLabel = label ?? (full ? "Join waitlist" : "Book");
   const when = formatDayTime(trip.departure_at, nowMs ? new Date(nowMs) : undefined, timeZone);
 
@@ -156,7 +159,9 @@ export function BookSheet({ trip, pickupLocations, fare, timeZone, size = "pill"
           <p className="k-banner" style={{ margin: 0 }}>
             <span aria-hidden="true">⏳</span>
             <span>
-              {`All ${trip.seat_capacity} seats are taken. ${trip.waitlist_count} waiting — you'll be told if a seat opens up.`}
+              {noSeats
+                ? `All ${trip.seat_capacity} seats are taken. ${trip.waitlist_count} waiting — you'll be told if a seat opens up.`
+                : `${trip.waitlist_count} ${trip.waitlist_count === 1 ? "person is" : "people are"} ahead of you — you'll be told when it's your turn.`}
             </span>
           </p>
         ) : null}

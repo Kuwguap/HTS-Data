@@ -19,6 +19,7 @@ import {
 import { Art, Button, Pill, Row } from "@/components/ui";
 import { BookSheet } from "./BookSheet";
 import { CancelBookingButton } from "./CancelBookingButton";
+import { isWaitlistOnly } from "./seats";
 
 export type TripRowSettings = Pick<
   Settings,
@@ -45,8 +46,11 @@ export function TripRow({ trip, settings, pickupLocations, nowMs }: TripRowProps
   const live = isTripLive(trip, settings, now);
   const moving = trip.status === "boarding" || trip.status === "departed";
   const left = seatsLeft(trip);
+  // Newcomers are waitlisted whenever someone already waits, even with a seat free.
+  const waitlistOnly = isWaitlistOnly(trip);
 
   const subtitleParts = [directionShort(trip.direction), `${left} of ${trip.seat_capacity} seats`];
+  if (trip.waitlist_count > 0) subtitleParts.push(`${trip.waitlist_count} waiting`);
   if (mine?.pickup_location?.name) subtitleParts.push(mine.pickup_location.name);
   else if (mine?.status === "waitlisted" && mine.waitlist_position) subtitleParts.push(`#${mine.waitlist_position} waiting`);
 
@@ -63,10 +67,10 @@ export function TripRow({ trip, settings, pickupLocations, nowMs }: TripRowProps
         {live ? "Live" : TRIP_STATUS_LABEL[trip.status]}
       </Pill>
     );
-  } else if (left === 0) {
+  } else if (waitlistOnly) {
     pill = (
       <Pill tone="amber" sm>
-        Full
+        {left === 0 ? "Full" : "Waitlist"}
       </Pill>
     );
   }

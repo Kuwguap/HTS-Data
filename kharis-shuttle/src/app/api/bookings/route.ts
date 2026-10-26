@@ -1,9 +1,9 @@
 import { ApiError, fromPostgresError, ok, parseBody, withHandler } from "@/lib/api";
 import { requireUser } from "@/lib/auth/require";
 import { getSettings } from "@/lib/data/settings";
-import { enqueueNotification, listDriverIds, scheduleDrain } from "@/lib/notify/enqueue";
+import { AFTER_DRAIN_BUDGET_MS, enqueueNotification, listDriverIds, scheduleDrain } from "@/lib/notify/enqueue";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { formatFare, formatTime } from "@/lib/time";
+import { formatFare, formatShortDate, formatTime } from "@/lib/time";
 import { createBookingSchema } from "@/lib/validation/bookings";
 
 export const dynamic = "force-dynamic";
@@ -38,6 +38,7 @@ export const POST = withHandler(async (request) => {
     if (loc?.name) pickupName = loc.name;
   }
   const time = formatTime(trip.departure_at, settings.timezone);
+  const date = formatShortDate(trip.departure_at, settings.timezone);
   const fare = formatFare(settings.fare_pesewas, settings.currency);
   const waitlisted = booking.status === "waitlisted";
   // created_at is reset when a cancelled row is re-used, so a re-booking notifies again.
@@ -48,6 +49,7 @@ export const POST = withHandler(async (request) => {
     kind: waitlisted ? "booking_waitlisted" : "booking_confirmed",
     vars: {
       time,
+      date,
       pickup: pickupName,
       fare,
       count: booking.waitlist_position ?? 0,
@@ -77,7 +79,7 @@ export const POST = withHandler(async (request) => {
       collapseTag: `manifest:${trip.id}`,
     });
   }
-  if (enqueued > 0) await scheduleDrain({ admin });
+  if (enqueued > 0) await scheduleDrain({ admin, budgetMs: AFTER_DRAIN_BUDGET_MS });
 
   return ok({ booking, trip });
 });

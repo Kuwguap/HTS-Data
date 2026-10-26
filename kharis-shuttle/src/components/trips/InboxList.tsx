@@ -23,23 +23,25 @@ export type InboxListProps = {
 
 /**
  * Chat-style inbox: incoming bubbles grouped by day. Unread ones keep their
- * blue dot for this visit while being marked read on mount.
+ * blue dot for this visit while being marked read; items that arrive later
+ * (realtime refresh) are marked read too, each id only once.
  */
 export function InboxList({ items }: InboxListProps) {
   const router = useRouter();
   const [seen] = useState<Set<string>>(() => new Set(items.filter((i) => i.unread).map((i) => i.id)));
-  const marked = useRef(false);
+  /** Ids already POSTed to /read (or in flight), so a refresh never re-sends them. */
+  const sent = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (marked.current) return;
-    const ids = items.filter((i) => i.unread).map((i) => i.id);
+    const ids = items.filter((i) => i.unread && !sent.current.has(i.id)).map((i) => i.id);
     if (ids.length === 0) return;
-    marked.current = true;
+    for (const id of ids) sent.current.add(id);
     api
       .post("/api/notifications/read", { ids })
       .then(() => router.refresh())
       .catch(() => {
-        marked.current = false;
+        // Let the next items change retry these.
+        for (const id of ids) sent.current.delete(id);
       });
   }, [items, router]);
 
