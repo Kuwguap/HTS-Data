@@ -1,0 +1,267 @@
+/**
+ * run_tick() replayed over Monday 2026-10-27 (Africa/Accra = UTC, no DST).
+ * Seeded timetable: to_campus 07:30 09:30 11:30 13:30 15:30, to_hostel 12:30 14:30 16:30 18:30, Mon–Fri.
+ * Settings: announcement 06:00, reminder lead 60, nudge 10, manifest lead 15, cutoff 5, 1 day ahead.
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Client } from "pg";
+import { IDS, book, one, resetDb, rows, scalar, tick, type TripRow } from "./helpers";
+
+let c: Client;
+
+const MON = "2026-10-27";
+const at = (hhmm: string, date = MON) => `${date} ${hhmm}:00+00`;
+
+type Notif = { user_id: string; kind: string; title: string; body: string; url: string | null; dedupe_key: string; data: Record<string, unknown> };
+
+async function notifs(kind: string): Promise<Notif[]> {
+  return rows<Notif>(c, "select user_id, kind, title, body, url, dedupe_key, data from notifications where kind = $1 order by created_at, user_id", [kind]);
+}
+
+async function tripAt(date: string, hhmm: string): Promise<TripRow> {
+  return one<TripRow>(c, "select * from trips where departure_at = $1::timestamptz", [at(hhmm, date)]);
+}
+
+describe("run_tick — a normal Monday", () => {
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  it("materialises today + tomorrow once, even when run 50 times", async () => {
+    const first = await tick(c, at("05:59"));
+    expect(first.trips_created).toBe(18); // 9 slots × (Mon + Tue)
+    expect(first.daily_enqueued).toBe(0);
+    expect(first.note).toBe(`cleanup:${MON}`);
+
+    for (let i = 0; i < 50; i++) {
+      const r = await tick(c, at("05:59"));
+      expect(r.trips_created).toBe(0);
+      expect(r.daily_enqueued).toBe(0);
+      expect(r.reminders_enqueued).toBe(0);
+      expect(r.note).toBeNull(); // cleanup only once per date
+    }
+    expect(await scalar<string>(c, "select count(*) from trips")).toBe("18");
+    expect(await scalar<string>(c, "select count(*) from trips where service_date = '2026-10-28'")).toBe("9");
+    expect(await scalar<string>(c, "select count(*) from notifications")).toBe("0");
+    expect(await scalar<string>(c, "select count(*) from tick_runs")).toBe("51");
+
+    const t = await tripAt(MON, "07:30");
+    expect(t.seat_capacity).toBe(14);
+    expect(t.reminder_at?.toISOString()).toBe(new Date(at("06:30")).toISOString());
+    const labels = await one<{ origin_label: string; destination_label: string }>(
+      c,
+      "select origin_label, destination_label from trips where id = $1",
+      [t.id],
+    );
+    expect(labels).toEqual({ origin_label: "Kharis Courts Hostel", destination_label: "KNUST" });
+    const back = await one<{ origin_label: string; destination_label: string }>(
+      c,
+      "select origin_label, destination_label from trips where departure_at = $1::timestamptz",
+      [at("12:30")],
+    );
+    expect(back).toEqual({ origin_label: "KNUST", destination_label: "Kharis Courts Hostel" });
+  });
+
+  it("skips service_days_off", async () => {
+    await c.query("insert into service_days_off (service_date, reason) values ('2026-10-29', 'Holiday')");
+    const created = await scalar<number>(c, "select materialize_trips('2026-10-29', '2026-10-30')");
+    expect(created).toBe(9); // only Fri 30th
+    expect(await scalar<string>(c, "select count(*) from trips where service_date = '2026-10-29'")).toBe("0");
+    await c.query("delete from trips where service_date = '2026-10-30'");
+  });
+
+  it("enqueues the daily announcement exactly once at 06:00 with the day's to_campus times", async () => {
+    await c.query("update profiles set reminders_enabled = false where id = $1", [IDS.s3]);
+    const r = await tick(c, at("06:00"));
+    expect(r.daily_enqueued).toBe(2); // s1 + s2 (s3 opted out; driver/admin are not students)
+    const again = await tick(c, at("06:05"));
+    expect(again.daily_enqueued).toBe(0);
+
+    const list = await notifs("daily_announcement");
+    expect(list.map((n) => n.user_id).sort()).toEqual([IDS.s1, IDS.s2].sort());
+    expect(list[0]?.body).toBe("Departures: 7:30 AM, 9:30 AM, 11:30 AM, 1:30 PM, 3:30 PM. Fare GH₵10, cash only. Tap to book your seat.");
+    expect(list[0]?.dedupe_key).toBe(`daily:${MON}:${IDS.s1}`);
+    expect(list[0]?.data["times"]).toBe("7:30 AM, 9:30 AM, 11:30 AM, 1:30 PM, 3:30 PM");
+    expect(list[0]?.url).toBe("/app");
+    await c.query("update profiles set reminders_enabled = true where id = $1", [IDS.s3]);
+  });
+
+  it("sends the 07:30 reminder at 06:30 once, only to students without a booking", async () => {
+    const t = await tripAt(MON, "07:30");
+    // s1 books before the reminder goes out (mock the clock: trip is in 2026, booking cutoff is fine)
+    const b = await book(c, IDS.s1, t.id, IDS.loc.gate);
+    expect(b.status).toBe("confirmed");
+
+    const early = await tick(c, at("06:29"));
+    expect(early.reminders_enqueued).toBe(0);
+
+    const r = await tick(c, at("06:30"));
+    expect(r.reminders_enqueued).toBe(2); // s2, s3
+    const again = await tick(c, at("06:31"));
+    expect(again.reminders_enqueued).toBe(0);
+
+    const list = await notifs("trip_reminder");
+    expect(list.map((n) => n.user_id).sort()).toEqual([IDS.s2, IDS.s3].sort());
+    expect(list[0]?.title).toBe("🚌 Shuttle at 7:30 AM");
+    expect(list[0]?.body).toBe("13/14 seats left. GH₵10 cash. Tap to opt in.");
+    expect(list[0]?.url).toBe(`/app/trips/${t.id}`);
+    expect(list[0]?.dedupe_key).toBe(`reminder:${t.id}:${IDS.s2}`);
+    expect((await tripAt(MON, "07:30")).reminder_sent_at).toBeTruthy();
+    // the 09:30 reminder is not due yet
+    expect((await tripAt(MON, "09:30")).reminder_sent_at).toBeNull();
+  });
+
+  it("at 07:20 nudges only confirmed riders (with their pickup name) and sends the driver manifest", async () => {
+    const t = await tripAt(MON, "07:30");
+    await book(c, IDS.s2, t.id, IDS.loc.carpark);
+    // s3 waitlisted: shrink capacity to 2 so the next booking waitlists
+    await c.query("update trips set seat_capacity = 2 where id = $1", [t.id]);
+    const w = await book(c, IDS.s3, t.id, IDS.loc.gate);
+    expect(w.status).toBe("waitlisted");
+
+    const before = await tick(c, at("07:14"));
+    expect(before.nudges_enqueued).toBe(0);
+    expect(before.manifests_enqueued).toBe(0);
+
+    const r = await tick(c, at("07:20"));
+    expect(r.nudges_enqueued).toBe(2);
+    expect(r.manifests_enqueued).toBe(1);
+    const again = await tick(c, at("07:21"));
+    expect(again.nudges_enqueued).toBe(0);
+    expect(again.manifests_enqueued).toBe(0);
+
+    const nudges = await notifs("trip_nudge");
+    const byUser = Object.fromEntries(nudges.map((n) => [n.user_id, n]));
+    expect(Object.keys(byUser).sort()).toEqual([IDS.s1, IDS.s2].sort());
+    expect(byUser[IDS.s1]?.title).toBe("⏰ Leaving in 10 min");
+    expect(byUser[IDS.s1]?.body).toBe("Be at Hostel main gate. Have GH₵10 cash ready.");
+    expect(byUser[IDS.s2]?.body).toBe("Be at Hostel car park. Have GH₵10 cash ready.");
+    expect(byUser[IDS.s1]?.dedupe_key).toBe(`nudge:${t.id}:${IDS.s1}`);
+
+    // no default driver and trip.driver_id null → every active driver (just kofi)
+    const manifests = await notifs("driver_manifest");
+    expect(manifests).toHaveLength(1);
+    expect(manifests[0]?.user_id).toBe(IDS.driver);
+    expect(manifests[0]?.title).toBe("📋 7:30 AM to KNUST");
+    expect(manifests[0]?.body).toBe("2 riders — Hostel car park ×1, Hostel main gate ×1");
+    expect(manifests[0]?.url).toBe(`/driver/trips/${t.id}`);
+    expect(await scalar<string>(c, "select urgency from notifications where id = (select id from notifications where kind = 'driver_manifest' limit 1)")).toBe("high");
+
+    const after = await tripAt(MON, "07:30");
+    expect(after.nudge_sent_at).toBeTruthy();
+    expect(after.manifest_sent_at).toBeTruthy();
+  });
+
+  it("manifest goes to the assigned driver only when trips.driver_id is set", async () => {
+    const t = await tripAt(MON, "09:30");
+    await c.query("update trips set driver_id = $1 where id = $2", [IDS.admin, t.id]); // admin drives today
+    const r = await tick(c, at("09:16"));
+    expect(r.manifests_enqueued).toBe(1);
+    const m = await one<Notif>(c, "select * from notifications where kind = 'driver_manifest' and dedupe_key like $1", [`manifest:${t.id}:%`]);
+    expect(m.user_id).toBe(IDS.admin);
+    expect(m.body).toBe("0 riders — No bookings yet");
+  });
+
+  it("expires stale trips, auto-arrives long-departed trips and expires pickup requests", async () => {
+    const t730 = await tripAt(MON, "07:30");
+    const t930 = await tripAt(MON, "09:30");
+    await c.query("select set_trip_status($1, 'departed', $2)", [t930.id, IDS.driver]);
+    await c.query("update trips set departed_at = $1::timestamptz where id = $2", [at("09:31"), t930.id]);
+    await c.query(
+      `insert into pickup_requests (rider_id, trip_id, direction, pickup_location_id, expires_at)
+       values ($1, $2, 'to_campus', $3, $4::timestamptz)`,
+      [IDS.s3, t730.id, IDS.loc.gate, at("09:45")],
+    );
+
+    // 07:30 was already expired by the 09:16 tick above (07:30 + 90 min < 09:16).
+    expect((await tripAt(MON, "07:30")).status).toBe("expired");
+
+    const r = await tick(c, at("13:00"));
+    // 09:30 departed > 3 h → arrived; 11:30 + 90 min = 13:00 is not yet strictly past
+    expect(r.expired_trips).toBe(1);
+    expect(r.expired_requests).toBe(1);
+    expect((await tripAt(MON, "09:30")).status).toBe("arrived");
+    expect((await tripAt(MON, "11:30")).status).toBe("scheduled");
+
+    const next = await tick(c, at("13:01"));
+    expect(next.expired_trips).toBe(1);
+    expect((await tripAt(MON, "11:30")).status).toBe("expired");
+    expect((await tripAt(MON, "12:30")).status).toBe("scheduled");
+    expect((await tripAt(MON, "13:30")).status).toBe("scheduled");
+    expect(await scalar<string>(c, "select status from pickup_requests limit 1")).toBe("expired");
+    const expired = await notifs("pickup_request_expired");
+    expect(expired).toHaveLength(1);
+    expect(expired[0]?.user_id).toBe(IDS.s3);
+    expect(expired[0]?.body).toContain("Hostel main gate");
+
+    const again = await tick(c, at("13:02"));
+    expect(again.expired_trips).toBe(0);
+    expect(again.expired_requests).toBe(0);
+  });
+});
+
+describe("run_tick — late first tick", () => {
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  it("never sends the 07:30 reminder when the first tick runs after departure − cutoff", async () => {
+    const r = await tick(c, at("07:26")); // cutoff is 5 min → window closed at 07:25
+    expect(r.trips_created).toBe(18);
+    expect(r.reminders_enqueued).toBe(0);
+    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'trip_reminder'")).toBe("0");
+    const t = await tripAt(MON, "07:30");
+    expect(t.reminder_sent_at).toBeTruthy(); // closed silently
+    expect((await tripAt(MON, "09:30")).reminder_sent_at).toBeNull();
+    // the announcement window (06:00–08:00) is still open → it does go out
+    expect(r.daily_enqueued).toBe(3);
+    // nudge + manifest for 07:30 are in their windows at 07:26
+    expect(r.manifests_enqueued).toBe(1);
+    expect(r.nudges_enqueued).toBe(0); // nobody booked
+  });
+
+  it("skips the daily announcement when the first tick of the day is more than 2 h late", async () => {
+    const r = await tick(c, at("08:01", "2026-10-28"));
+    expect(r.daily_enqueued).toBe(0);
+    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'daily_announcement' and dedupe_key like 'daily:2026-10-28:%'")).toBe("0");
+    const later = await tick(c, at("09:00", "2026-10-28"));
+    expect(later.daily_enqueued).toBe(0);
+  });
+
+  it("respects daily_announcement_enabled = false", async () => {
+    await c.query("update settings set daily_announcement_enabled = false where id = 1");
+    const r = await tick(c, at("06:00", "2026-10-29"));
+    expect(r.daily_enqueued).toBe(0);
+    await c.query("update settings set daily_announcement_enabled = true where id = 1");
+  });
+});
+
+describe("timezone", () => {
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  it("materialises 07:30 local as 06:30Z under Africa/Lagos", async () => {
+    await c.query("update settings set timezone = 'Africa/Lagos' where id = 1");
+    const created = await scalar<number>(c, "select materialize_trips('2026-11-02', '2026-11-02')");
+    expect(created).toBe(9);
+    const t = await one<TripRow>(c, "select * from trips where service_date = '2026-11-02' and direction = 'to_campus' order by departure_at limit 1");
+    expect(t.departure_at.toISOString()).toBe("2026-11-02T06:30:00.000Z");
+    expect(t.reminder_at?.toISOString()).toBe("2026-11-02T05:30:00.000Z");
+    expect(await scalar<string>(c, "select format_local_time($1::timestamptz)", [t.departure_at])).toBe("7:30 AM");
+    expect(await scalar<string>(c, "select local_now('2026-11-02 06:30:00+00')::text")).toBe("2026-11-02 07:30:00");
+    // the daily announcement window follows the zone: 06:00 Lagos = 05:00Z
+    const r = await tick(c, "2026-11-02 05:00:00+00");
+    expect(r.daily_enqueued).toBe(3);
+    await c.query("update settings set timezone = 'Africa/Accra' where id = 1");
+  });
+});

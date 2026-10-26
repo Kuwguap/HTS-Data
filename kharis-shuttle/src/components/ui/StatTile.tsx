@@ -49,7 +49,7 @@ export function StatTile({ value, label, art, icon, tone = "outline", zero, dang
       <div className="k-tile-value" style={{ position: "relative", zIndex: 1, ...valueStyle }}>
         {value}
       </div>
-      <div className="k-tile-label" style={{ position: "relative", zIndex: 1 }}>
+      <div className="k-tile-label" style={{ position: "relative", zIndex: 1, paddingRight: art ? 44 : 0 }}>
         {label}
       </div>
       {art ? (

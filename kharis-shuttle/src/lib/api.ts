@@ -47,7 +47,15 @@ export function fail(status: number, code: ApiErrorCode, message: string, detail
 export function fromPostgresError(err: unknown): ApiError {
   const e = err as { message?: string; code?: string; details?: string } | null;
   const message = e?.message ?? "Database error";
-  const known: ApiErrorCode[] = ["TRIP_NOT_OPEN", "BOOKING_CLOSED", "ALREADY_BOOKED", "PICKUP_INVALID", "NOT_FOUND", "FORBIDDEN"];
+  const known: ApiErrorCode[] = [
+    "TRIP_NOT_OPEN",
+    "BOOKING_CLOSED",
+    "ALREADY_BOOKED",
+    "PICKUP_INVALID",
+    "NOT_FOUND",
+    "FORBIDDEN",
+    "CONFLICT",
+  ];
   for (const code of known) {
     if (message.startsWith(code)) {
       const status = code === "NOT_FOUND" ? 404 : code === "FORBIDDEN" ? 403 : 409;

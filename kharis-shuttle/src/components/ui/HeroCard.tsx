@@ -47,7 +47,7 @@ export function HeroCard({ tone = "blue", title, subtitle, disc, art, cta, href,
   const cls = ["k-hero", `grad-${tone}`, className ?? ""].filter(Boolean).join(" ");
   if (href) {
     return (
-      <Link href={href} className={cls} style={{ color: "inherit" }}>
+      <Link href={href} className={cls}>
         {body}
       </Link>
     );

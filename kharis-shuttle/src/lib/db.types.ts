@@ -791,6 +791,25 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: undefined;
       };
+      // Internal helpers (service role only); exposed here because they exist in `public`.
+      booking_promote_next: {
+        Args: { p_trip_id: string };
+        Returns: Database["public"]["Tables"]["bookings"]["Row"] | null;
+      };
+      booking_renumber_waitlist: {
+        Args: { p_trip_id: string };
+        Returns: undefined;
+      };
+      /** 1000 → "GH₵10", 1250 → "GH₵12.50" (same output as formatFare in lib/time.ts). */
+      format_fare: {
+        Args: { p_pesewas: number; p_currency?: string };
+        Returns: string;
+      };
+      /** "7:30 AM" in settings.timezone. */
+      format_local_time: {
+        Args: { p_at: string };
+        Returns: string;
+      };
     };
     Enums: {
       user_role: UserRole;

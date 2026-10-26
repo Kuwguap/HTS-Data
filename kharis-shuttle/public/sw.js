@@ -11,7 +11,7 @@
  * Bump VERSION on every deploy that should drop old caches.
  */
 /* eslint-disable */
-const VERSION = "2026-10-26.1";
+const VERSION = "2026-10-26.2";
 const STATIC_CACHE = "ks-static-" + VERSION;
 const TILE_CACHE = "ks-tiles-" + VERSION;
 const CACHE_PREFIX = "ks-";

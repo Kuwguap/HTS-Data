@@ -305,7 +305,10 @@
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* ---------- base ---------- */
+/* ---------- base ----------
+   Must live in @layer base: unlayered element rules (button, a) would otherwise
+   beat every .k-* class in @layer components regardless of specificity. */
+@layer base {
 html {
   background: var(--bg);
   -webkit-text-size-adjust: 100%;
@@ -361,6 +364,7 @@ a {
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
 }
 
 /* ---------- layout ---------- */

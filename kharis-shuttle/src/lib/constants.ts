@@ -15,7 +15,7 @@ export const HOME_BY_ROLE = {
 export const ART = {
   bus: { emoji: "🚌", src: "/icons/bus.webp" },
   campus: { emoji: "🏫", src: "/icons/campus.webp" },
-  hostel: { emoji: "🏠", src: "/icons/krab/home.webp" },
+  hostel: { emoji: "🏠", src: "/icons/hostel.webp" },
   seat: { emoji: "💺", src: "/icons/seat.webp" },
   cash: { emoji: "💵", src: "/icons/cash.webp" },
   ticket: { emoji: "🎟️", src: "/icons/ticket.webp" },

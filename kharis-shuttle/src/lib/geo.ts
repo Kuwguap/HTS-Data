@@ -41,7 +41,7 @@ export const TRACKING_DEFAULTS = {
   heartbeatMs: 30_000,
 } as const;
 
-export type TrackingOptions = typeof TRACKING_DEFAULTS;
+export type TrackingOptions = { -readonly [K in keyof typeof TRACKING_DEFAULTS]: number };
 
 /**
  * Decide whether a new GPS fix is worth sending.

@@ -71,13 +71,19 @@ export async function scalar<T = unknown>(c: Client, sql: string, params: unknow
 
 /** Run `sql` and return the thrown error message ('' when it succeeded). */
 export async function errorOf(c: Client, sql: string, params: unknown[] = []): Promise<string> {
-  await c.query("savepoint err_probe");
+  // Inside a transaction, probe under a savepoint so a failure does not abort it.
+  let inTx = true;
+  try {
+    await c.query("savepoint err_probe");
+  } catch {
+    inTx = false; // "SAVEPOINT can only be used in transaction blocks"
+  }
   try {
     await c.query(sql, params);
-    await c.query("release savepoint err_probe");
+    if (inTx) await c.query("release savepoint err_probe");
     return "";
   } catch (e) {
-    await c.query("rollback to savepoint err_probe");
+    if (inTx) await c.query("rollback to savepoint err_probe");
     return (e as Error).message;
   }
 }

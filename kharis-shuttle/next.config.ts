@@ -3,8 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // Leaflet ships its own CSS/images; we never run it on the server.
-  experimental: {},
+  // Playwright and curl talk to the dev server via 127.0.0.1; Next 16 treats that
+  // as a cross-origin dev host unless listed here.
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   async headers() {
     return [
       {
