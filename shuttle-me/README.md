@@ -38,7 +38,7 @@ delivery) for the deeper notes.
 ## Local development
 
 ```bash
-cd kharis-shuttle
+cd shuttle-me
 pnpm install
 cp .env.example .env.local      # fill in Supabase + VAPID + secrets (see below)
 pnpm dev                        # http://localhost:3000
@@ -77,7 +77,7 @@ Useful scripts:
    "Confirm email" and in **Authentication → Settings** turn **off** "Allow new users to sign up"
    (the app creates users itself with the service role).
 2. **Secrets**: `pnpm vapid`, then generate `PIN_PEPPER` and `CRON_SECRET` (`openssl rand -hex 32`).
-3. **Host the app** (Vercel: import the repo, root directory `kharis-shuttle`, add the env vars).
+3. **Host the app** (Vercel: import the repo, root directory `shuttle-me`, add the env vars).
    Any Node host works; nothing depends on Vercel.
 4. **Admin**: `pnpm seed:admin --username <name> --pin <4–6 digits>` with `.env.local` pointing at
    the project. Log in at `/login`, open `/admin/settings`, check the fare, times and pickup points

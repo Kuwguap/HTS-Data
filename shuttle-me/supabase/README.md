@@ -37,7 +37,7 @@ is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conf
 2. **Apply the migrations** in order, e.g. `supabase db push` with the CLI linked to the
    project, or paste each file into the SQL editor.
 3. **Auth settings**: disable public sign-ups and email confirmations. Users are created
-   only by the app via `auth.admin.createUser({ email: '<username>@users.kharis-shuttle.local',
+   only by the app via `auth.admin.createUser({ email: '<username>@users.shuttle-me.local',
    email_confirm: true, user_metadata: { username, full_name, phone, room }, app_metadata: { role } })`.
    `handle_new_user()` copies the metadata into `profiles`; the role is read from
    **app_metadata only** (never user_metadata) and defaults to `student`.

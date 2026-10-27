@@ -228,7 +228,7 @@ describe("service_role and anon", () => {
   it("profiles are created by the auth.users trigger with role from app_metadata only", async () => {
     await c.query(
       `insert into auth.users (id, email, raw_user_meta_data, raw_app_meta_data) values
-       ('99999999-0000-4000-8000-000000000001', 'kwame@users.kharis-shuttle.local', '{"username":"Kwame","full_name":"Kwame A","role":"admin"}', '{}')`,
+       ('99999999-0000-4000-8000-000000000001', 'kwame@users.shuttle-me.local', '{"username":"Kwame","full_name":"Kwame A","role":"admin"}', '{}')`,
     );
     const p = await one<{ username: string; role: string; full_name: string }>(
       c,
@@ -239,12 +239,12 @@ describe("service_role and anon", () => {
     expect(
       await errorOf(
         c,
-        `insert into auth.users (email, raw_user_meta_data) values ('x@users.kharis-shuttle.local', '{"username":"no spaces!"}')`,
+        `insert into auth.users (email, raw_user_meta_data) values ('x@users.shuttle-me.local', '{"username":"no spaces!"}')`,
       ),
     ).toMatch(/profiles_username_format/);
     // duplicate username → unique violation
     expect(
-      await errorOf(c, `insert into auth.users (email, raw_user_meta_data) values ('abena2@users.kharis-shuttle.local', '{"username":"abena"}')`),
+      await errorOf(c, `insert into auth.users (email, raw_user_meta_data) values ('abena2@users.shuttle-me.local', '{"username":"abena"}')`),
     ).toMatch(/profiles_username_key/);
   });
 });
