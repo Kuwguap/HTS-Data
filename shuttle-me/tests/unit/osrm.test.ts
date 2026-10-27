@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { clearRouterCache, matchTrace, prepareTrace, routeVia, type TracePoint } from "@/lib/routing/osrm";
+import { MATCH_CHUNK_POINTS, chunkTrace, clearRouterCache, matchTrace, prepareTrace, routeVia, type TracePoint } from "@/lib/routing/osrm";
+import { haversineM } from "@/lib/geo";
 
 const FROM = { lat: 6.6745, lng: -1.5716 };
 const VIA = { lat: 6.672, lng: -1.569 };
@@ -158,6 +159,8 @@ describe("matchTrace", () => {
         { lat: 6.6735, lng: -1.5705 },
       ],
       confidence: 0.87,
+      fromAt: T0,
+      throughAt: T0 + 20_000,
     });
   });
 
@@ -177,13 +180,17 @@ describe("matchTrace", () => {
     expect(u.searchParams.get("timestamps")).toBe(`${s};${s + 5};${s + 20}`);
   });
 
-  it("is keyed by the caller's cache key for 15 s", async () => {
+  it("is keyed by the caller's cache key for 15 s, and chunks by their content underneath", async () => {
     fetchMock.mockResolvedValue(jsonResponse(matchBody));
     const a = await matchTrace(trace, "trip:4");
     const b = await matchTrace(trace, "trip:4");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(b).toBe(a);
+    // A new caller key with the very same fixes is served from the per-chunk cache.
     await matchTrace(trace, "trip:5");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A new fix changes the live chunk → one more request.
+    await matchTrace([...trace, { lat: 6.6725, lng: -1.5695, at: T0 + 30_000 }], "trip:6");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -198,19 +205,86 @@ describe("matchTrace", () => {
 });
 
 describe("prepareTrace", () => {
-  it("sends at most the last 100 fixes, thinned to one per ≥ 10 m when there are more", () => {
-    // 300 fixes 5 m apart (≈ 0.000045° of latitude), one per second.
+  it("thins to one fix per ≥ 15 m (keeping the newest) and sends at most the last 100", () => {
+    // 300 fixes 5 m apart (≈ 0.000045° of latitude), one per second → every third fix survives.
     const many: TracePoint[] = Array.from({ length: 300 }, (_, i) => ({ lat: 6.67 + i * 0.000045, lng: -1.57, at: T0 + i * 1000 }));
     const out = prepareTrace(many);
-    expect(out).toHaveLength(100);
+    expect(out.length).toBeLessThanOrEqual(100);
     expect(out[out.length - 1]).toBe(many[299]);
-    // thinning kept every other fix (10 m apart), so the window spans ~200 of the originals
-    expect(out[0]!.at).toBeGreaterThanOrEqual(many[100]!.at);
-    expect(out[0]!.at).toBeLessThanOrEqual(many[102]!.at);
-    for (let i = 1; i < out.length; i++) expect(out[i]!.at).toBeGreaterThan(out[i - 1]!.at);
+    for (let i = 1; i < out.length; i++) {
+      expect(out[i]!.at).toBeGreaterThan(out[i - 1]!.at);
+      if (i < out.length - 1) expect(haversineM(out[i - 1]!, out[i]!)).toBeGreaterThanOrEqual(15);
+    }
   });
 
-  it("leaves a short trace alone", () => {
+  it("collapses a stationary bus to its first and newest fix", () => {
+    const parked: TracePoint[] = Array.from({ length: 6 }, (_, i) => ({ lat: 6.67, lng: -1.57, at: T0 + i * 10_000 }));
+    expect(prepareTrace(parked)).toEqual([parked[0], parked[5]]);
+  });
+
+  it("leaves a short moving trace alone", () => {
     expect(prepareTrace(trace)).toEqual(trace);
+  });
+});
+
+describe("chunkTrace + chunked matching (public router: ≤ 10 coordinates per request)", () => {
+  // 25 fixes, 10 s apart, 80 m apart → 250 s of driving spanning three 90 s buckets.
+  const long: TracePoint[] = Array.from({ length: 25 }, (_, i) => ({ lat: 6.67 + i * 0.00072, lng: -1.57, at: T0 + i * 10_000, accuracyM: 12 }));
+
+  it("splits by 90 s bucket, never more than MATCH_CHUNK_POINTS per chunk, with a shared joining fix", () => {
+    const chunks = chunkTrace(long);
+    expect(chunks.length).toBeGreaterThanOrEqual(3);
+    for (const c of chunks) expect(c.points.length).toBeLessThanOrEqual(MATCH_CHUNK_POINTS);
+    for (let i = 1; i < chunks.length; i++) {
+      const prev = chunks[i - 1]!.points;
+      expect(prev[prev.length - 1]).toBe(chunks[i]!.points[0]);
+    }
+    expect(chunks[chunks.length - 1]!.points[chunks[chunks.length - 1]!.points.length - 1]).toBe(long[24]);
+    // keys are content-based: same input → same keys
+    expect(chunkTrace(long).map((c) => c.key)).toEqual(chunks.map((c) => c.key));
+  });
+
+  it("matches each chunk separately, joins the pieces and reports the covered window", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const coords = url.split("/match/v1/driving/")[1]!.split("?")[0]!.split(";");
+      expect(coords.length).toBeLessThanOrEqual(MATCH_CHUNK_POINTS);
+      const line = coords.map((c) => c.split(",").map(Number));
+      return jsonResponse({ code: "Ok", matchings: [{ confidence: 0.9, geometry: { type: "LineString", coordinates: line } }] });
+    });
+    const r = await matchTrace(long, "trip:25");
+    expect(r).not.toBeNull();
+    expect(r!.fromAt).toBe(long[0]!.at);
+    expect(r!.throughAt).toBe(long[24]!.at);
+    expect(r!.geometry[0]).toEqual({ lat: long[0]!.lat, lng: long[0]!.lng });
+    expect(r!.geometry[r!.geometry.length - 1]).toEqual({ lat: long[24]!.lat, lng: long[24]!.lng });
+    // joining fixes are not duplicated
+    for (let i = 1; i < r!.geometry.length; i++) expect(r!.geometry[i]).not.toEqual(r!.geometry[i - 1]);
+    const calls = fetchMock.mock.calls.length;
+    expect(calls).toBe(chunkTrace(long).length);
+
+    // One new fix later: only the live (last) chunk is fetched again; completed chunks come from cache.
+    const more = [...long, { lat: 6.67 + 25 * 0.00072, lng: -1.57, at: T0 + 25 * 10_000, accuracyM: 12 }];
+    const r2 = await matchTrace(more, "trip:26");
+    expect(r2!.throughAt).toBe(more[25]!.at);
+    expect(fetchMock.mock.calls.length).toBe(calls + 1);
+  });
+
+  it("returns the latest contiguous run when an older chunk fails, and null when the newest fails", async () => {
+    let n = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      n++;
+      const coords = url.split("/match/v1/driving/")[1]!.split("?")[0]!.split(";");
+      const line = coords.map((c) => c.split(",").map(Number));
+      if (n === 1) return jsonResponse({ code: "NoMatch" }); // the oldest chunk is fetched first
+      return jsonResponse({ code: "Ok", matchings: [{ confidence: 0.8, geometry: { type: "LineString", coordinates: line } }] });
+    });
+    const r = await matchTrace(long, "t2:25");
+    expect(r).not.toBeNull();
+    expect(r!.fromAt).toBeGreaterThan(long[0]!.at);
+    expect(r!.throughAt).toBe(long[24]!.at);
+
+    clearRouterCache();
+    fetchMock.mockImplementation(async () => jsonResponse({ code: "TooBig" }, 400));
+    expect(await matchTrace(long, "t3:25")).toBeNull();
   });
 });

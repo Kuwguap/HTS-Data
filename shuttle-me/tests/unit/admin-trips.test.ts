@@ -101,7 +101,8 @@ function tripRow(departureAt: string) {
 }
 
 beforeEach(() => {
-  vi.spyOn(Date, "now").mockReturnValue(NOW);
+  // The route reads the clock through both Date.now() and `new Date()`: fake the whole Date.
+  vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   tripUpdates.length = 0;
   requireRole.mockReset();
   requireRole.mockResolvedValue({
@@ -118,6 +119,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 

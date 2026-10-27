@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/trips/[id]/matched — the bus's last 100 GPS fixes snapped to the road
- * network (OSRM match). Read-only; any signed-in user who can see the trip.
+ * network (OSRM match, in cached chunks of ≤ 10 coordinates for the public router). Read-only; any signed-in user who can see the trip.
  * `geometry` is null (200, never 5xx) when there are fewer than two fixes or the
  * router is unavailable; the map then draws the raw fixes. `from_recorded_at` /
  * `through_recorded_at` bound the fixes the geometry covers so the client can keep
@@ -44,8 +44,16 @@ export const GET = withHandler<RouteCtx<{ id: string }>>(async (_request, ctx) =
       ? await matchTrace(
           fixes.map((f) => ({ lat: f.lat, lng: f.lng, at: Date.parse(f.recorded_at), accuracyM: f.accuracy_m })),
           `${id}:${newest?.id ?? 0}`,
+          id,
         )
       : null;
+
+  // The matcher snaps the trace in chunks and may cover only part of the window
+  // (older chunks fill in on later calls); report the exact fixes it covers, in the
+  // database's own timestamp format so the client can splice raw fixes around it.
+  const recordedAt = new Map(fixes.map((f) => [Date.parse(f.recorded_at), f.recorded_at] as const));
+  const bound = (at: number | undefined, fallback: string | null) =>
+    at == null ? fallback : (recordedAt.get(at) ?? new Date(at).toISOString());
 
   return ok(
     {
@@ -53,8 +61,8 @@ export const GET = withHandler<RouteCtx<{ id: string }>>(async (_request, ctx) =
       confidence: matched?.confidence ?? 0,
       through_point_id: newest?.id ?? null,
       points_used: fixes.length,
-      from_recorded_at: fixes[0]?.recorded_at ?? null,
-      through_recorded_at: newest?.recorded_at ?? null,
+      from_recorded_at: bound(matched?.fromAt, fixes[0]?.recorded_at ?? null),
+      through_recorded_at: bound(matched?.throughAt, newest?.recorded_at ?? null),
     },
     { headers },
   );
