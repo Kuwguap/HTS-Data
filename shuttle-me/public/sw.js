@@ -4,9 +4,10 @@
  *  - HTML, RSC payloads and API calls are NEVER cached (network only); a failed
  *    navigation falls back to the precached /offline page.
  *  - Cache-first only for hashed Next assets (/_next/static/*), app icons
- *    (/icons/*) and Carto basemap tiles (bounded to TILE_LIMIT entries). Tile
- *    layers must be created with crossOrigin: true, otherwise their responses
- *    are opaque and skipped.
+ *    (/icons/*) and basemap tiles from server.arcgisonline.com (Esri World
+ *    Street Map; basemaps.cartocdn.com is still recognised for old caches),
+ *    bounded to TILE_LIMIT entries. Tile layers must be created with
+ *    crossOrigin: true, otherwise their responses are opaque and skipped.
  *  - The unversioned META_CACHE holds the VAPID public key the page posts after
  *    registration ({type:"VAPID_KEY", key}), so pushsubscriptionchange can
  *    re-subscribe even when the old subscription is gone (iOS).
@@ -16,7 +17,7 @@
  * Bump VERSION on every deploy that should drop old caches.
  */
 /* eslint-disable */
-const VERSION = "2026-10-26.3";
+const VERSION = "2026-10-27.1";
 const STATIC_CACHE = "ks-static-" + VERSION;
 const TILE_CACHE = "ks-tiles-" + VERSION;
 const META_CACHE = "ks-meta";
@@ -130,7 +131,7 @@ function classifyRequest(url, mode, origin, method) {
   }
   const sameOrigin = u.origin === origin.replace(/\/$/, "");
   if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0)) return "static";
-  if (/(^|\.)basemaps\.cartocdn\.com$/.test(u.hostname)) return "tile";
+  if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
   if (mode === "navigate") return "navigate";
   return "passthrough";
 }

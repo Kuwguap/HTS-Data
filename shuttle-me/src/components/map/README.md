@@ -37,7 +37,7 @@ Always import **`LiveTripMapLoader`** (a `next/dynamic` wrapper with `ssr: false
 
 ## Behaviour
 
-* **Tiles**: Carto Voyager (light) / Dark Matter (dark), chosen from `prefers-color-scheme` and switched live. Attribution © OpenStreetMap © CARTO.
+* **Tiles**: Esri World Street Map (no API key) from `src/lib/map/tiles.ts`, one layer for both schemes. Dark mode = CSS filter on the tile pane only (`.k-map-dark .leaflet-tile-pane` in `globals.css`; the class follows `prefers-color-scheme` live, markers/trail/tooltips/controls stay untouched). Set `NEXT_PUBLIC_MAP_TILE_URL` (+ `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION`) to switch provider; a custom provider's tiles are network-only unless its host is added to `public/sw.js` (and `src/lib/push/sw-logic.ts`).
 * **Bus**: `L.divIcon` `.k-bus-marker` with 🚌 rotated by heading; `.k-bus-marker--stale` (grey) once no fix arrived within `location_stale_seconds`.
 * **Trail**: polyline in `--accent`, weight 4, from every point known (initial fetch + broadcasts).
 * **Pins**: `.k-pin-marker` 📍 per pickup location.

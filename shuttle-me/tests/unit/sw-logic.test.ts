@@ -13,6 +13,7 @@ import {
   META_CACHE,
   META_VAPID_URL,
   VAPID_KEY_MESSAGE,
+  classifyRequest,
   notificationOptionsFor,
   parsePushPayload,
   pickClickClient,
@@ -262,7 +263,7 @@ describe("public/sw.js mirrors sw-logic", () => {
 
   it("fetch: tiles and static assets are cache-first, navigations fall back to /offline, API passes through", async () => {
     const sw = loadSw();
-    const tile = await sw.fire("fetch", { request: { url: "https://a.basemaps.cartocdn.com/rastertiles/voyager/1/1/1.png", mode: "cors", method: "GET" } });
+    const tile = await sw.fire("fetch", { request: { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/16/31046/32487", mode: "cors", method: "GET" } });
     expect(sw.fetch).toHaveBeenCalledTimes(1);
     expect(tile).toBeTruthy();
     // cache.put() is fire-and-forget after the response is returned.
@@ -276,6 +277,18 @@ describe("public/sw.js mirrors sw-logic", () => {
     const before = sw.fetch.mock.calls.length;
     await sw.fire("fetch", { request: { url: "https://shuttle.example.com/api/bookings", mode: "cors", method: "GET" } });
     expect(sw.fetch.mock.calls.length).toBe(before);
+  });
+
+  it("fetch: the old CARTO tile host still classifies as a tile (cached entries stay valid)", async () => {
+    const origin = "https://shuttle.example.com";
+    expect(classifyRequest("https://a.basemaps.cartocdn.com/rastertiles/voyager/1/1/1.png", "cors", origin)).toBe("tile");
+    expect(classifyRequest("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/1/1/1", "cors", origin)).toBe("tile");
+    expect(classifyRequest("https://evil.example.com/basemaps.cartocdn.com/1/1/1.png", "cors", origin)).toBe("passthrough");
+
+    const sw = loadSw();
+    await sw.fire("fetch", { request: { url: "https://a.basemaps.cartocdn.com/rastertiles/voyager/1/1/1.png", mode: "cors", method: "GET" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sw.stores.get("ks-tiles-" + swVersion())?.size).toBe(1);
   });
 });
 

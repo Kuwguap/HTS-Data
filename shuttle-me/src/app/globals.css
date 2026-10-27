@@ -1434,3 +1434,9 @@ a {
   font-family: var(--font);
   background: var(--surface-3);
 }
+
+/* Dark mode for the basemap: the provider has no dark tiles, so invert only the
+   tile pane. Markers, the trail, tooltips and controls live in other panes. */
+.k-map-dark .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.6);
+}

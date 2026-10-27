@@ -175,7 +175,8 @@ export type RequestClass = "static" | "tile" | "navigate" | "passthrough";
 /**
  * Which caching strategy a request gets:
  * - `static`: cache-first (hashed Next assets, app icons)
- * - `tile`: cache-first with a bounded cache (Carto basemap tiles)
+ * - `tile`: cache-first with a bounded cache (Esri basemap tiles from
+ *   server.arcgisonline.com; basemaps.cartocdn.com is still recognised)
  * - `navigate`: network-only with the /offline fallback
  * - `passthrough`: untouched (API, RSC, everything else)
  */
@@ -189,7 +190,7 @@ export function classifyRequest(url: string, mode: string, origin: string, metho
   }
   const sameOrigin = u.origin === origin.replace(/\/$/, "");
   if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0)) return "static";
-  if (/(^|\.)basemaps\.cartocdn\.com$/.test(u.hostname)) return "tile";
+  if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
   if (mode === "navigate") return "navigate";
   return "passthrough";
 }

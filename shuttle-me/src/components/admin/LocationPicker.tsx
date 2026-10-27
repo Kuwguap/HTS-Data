@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import type * as Leaflet from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
+import { MAP_DARK_CLASS, TILE_ATTRIBUTION, TILE_MAX_ZOOM, TILE_URL } from "@/lib/map/tiles";
 
 export type LocationPickerProps = {
   lat: number | null;
@@ -14,11 +15,6 @@ export type LocationPickerProps = {
 
 /** KNUST / Kharis Courts area, Kumasi. */
 const DEFAULT_CENTER: [number, number] = [6.6745, -1.5716];
-const TILE = {
-  light: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-  dark: "https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
-};
-const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 function pinIcon(L: typeof Leaflet) {
   return L.divIcon({
@@ -30,7 +26,7 @@ function pinIcon(L: typeof Leaflet) {
 }
 
 /**
- * Small Leaflet map (Carto tiles) to place a pickup point: tap to move the pin,
+ * Small Leaflet map (street tiles, CSS-darkened in dark mode) to place a pickup point: tap to move the pin,
  * or use the phone's GPS. Loaded client-side only — import it with next/dynamic
  * ({ ssr: false }).
  */
@@ -56,8 +52,10 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
       const dark = document.documentElement.dataset.theme === "dark";
       const start: [number, number] = lat != null && lng != null ? [lat, lng] : DEFAULT_CENTER;
       const map = L.map(containerRef.current, { center: start, zoom: 15, zoomControl: true, attributionControl: true });
+      // One tile layer for both schemes: dark mode is a CSS filter on the tile pane (globals.css).
+      containerRef.current.classList.toggle(MAP_DARK_CLASS, dark);
       // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
-      L.tileLayer(dark ? TILE.dark : TILE.light, { attribution: ATTRIBUTION, subdomains: "abcd", maxZoom: 19, crossOrigin: true }).addTo(map);
+      L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM, crossOrigin: true }).addTo(map);
       if (lat != null && lng != null) markerRef.current = L.marker(start, { icon: pinIcon(L) }).addTo(map);
       map.on("click", (e: Leaflet.LeafletMouseEvent) => {
         const next: [number, number] = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];

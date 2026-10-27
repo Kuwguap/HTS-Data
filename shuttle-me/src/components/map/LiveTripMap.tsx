@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PickupLocation, Trip } from "@/lib/db.types";
 import { estimateEtaSeconds, formatDistance, formatEta, haversineM } from "@/lib/geo";
 import { useTripLocation } from "@/hooks/useTripLocation";
+import { MAP_DARK_CLASS, TILE_ATTRIBUTION, TILE_MAX_ZOOM, TILE_URL } from "@/lib/map/tiles";
 
 export type LiveTripMapProps = {
   tripId: string;
@@ -18,12 +19,6 @@ export type LiveTripMapProps = {
   /** Small 220px preview (driver tracking screen) instead of a tall map. */
   compact?: boolean;
 };
-
-const TILES = {
-  light: "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-  dark: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}@2x.png",
-} as const;
-const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 // Kumasi (KNUST) — only used before any pin or fix is known.
 const FALLBACK_CENTER: L.LatLngExpression = [6.6745, -1.5716];
@@ -74,8 +69,9 @@ const roundBtn: React.CSSProperties = {
 };
 
 /**
- * Leaflet map with the live bus (rotated 🚌 marker + trail), pickup pins, Carto
- * light/dark tiles, round zoom / centre buttons and a LIVE / last-seen chip.
+ * Leaflet map with the live bus (rotated 🚌 marker + trail), pickup pins, street
+ * tiles (CSS-darkened in dark mode), round zoom / centre buttons and a LIVE /
+ * last-seen chip.
  */
 export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, settings, compact }: LiveTripMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -116,15 +112,13 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     map.attributionControl.setPrefix(false);
     mapRef.current = map;
 
+    // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
+    tileRef.current = L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM, detectRetina: false, crossOrigin: true }).addTo(map);
+
+    // One tile layer for both schemes: dark mode is a CSS filter on the tile pane (globals.css).
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const applyTiles = () => {
-      const url = mq.matches ? TILES.dark : TILES.light;
-      if (tileRef.current) {
-        if ((tileRef.current as L.TileLayer & { _url?: string })._url === url) return;
-        tileRef.current.remove();
-      }
-      // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
-      tileRef.current = L.tileLayer(url, { attribution: ATTRIBUTION, maxZoom: 19, detectRetina: false, crossOrigin: true }).addTo(map);
+      el.classList.toggle(MAP_DARK_CLASS, mq.matches);
       trailRef.current?.setStyle({ color: accentColor() });
     };
     applyTiles();

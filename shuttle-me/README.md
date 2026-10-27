@@ -20,7 +20,7 @@ admin inside the app.
 | App | Next.js 16 (App Router, TypeScript), Tailwind 4, design tokens ported from the Krab mini app |
 | Backend | Supabase: Postgres (schema, RLS, SQL functions), Auth (username + PIN mapped to a synthetic email), Realtime (broadcast for GPS), `pg_cron` + `pg_net` as the minute ticker |
 | Push | Web Push (VAPID) via `web-push`, hand-written `public/sw.js` |
-| Map | Leaflet + CARTO raster tiles (no API key) |
+| Map | Leaflet + Esri World Street Map raster tiles (no API key; dark mode is a CSS filter on the tile pane). `NEXT_PUBLIC_MAP_TILE_URL` / `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION` switch provider; a custom provider's tiles are network-only unless its host is added to `public/sw.js` |
 | Tests | Vitest (unit + SQL against a throwaway local Postgres 16), Playwright smoke |
 
 See `docs/` (if present), `supabase/README.md` (database + cron) and `src/lib/push/README.md` (push
@@ -68,6 +68,7 @@ Useful scripts:
 | `PIN_PEPPER` | server only | random 32+ chars; derives the Supabase password from a user's PIN. Changing it invalidates every PIN. |
 | `CRON_SECRET` | server only | bearer token `pg_cron`/cron-job.org must send to `/api/cron/tick` |
 | `NEXT_PUBLIC_APP_URL` | client | public URL, used in the install guide and push links |
+| `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION` | client, optional | override the basemap (default Esri World Street Map, see `src/lib/map/tiles.ts`) |
 
 ## Deploying
 
