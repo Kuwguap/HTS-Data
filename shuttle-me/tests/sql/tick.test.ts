@@ -1,5 +1,7 @@
 /**
- * run_tick() replayed over Monday 2026-10-27 (Africa/Accra = UTC, no DST).
+ * run_tick() replayed over the next Monday after today (Africa/Accra = UTC, no DST). The date is
+ * computed, not hard-coded: book_seat() compares real now() with the departure cutoff, so a fixed
+ * past date made the suite fail after 07:25 UTC on that day.
  * Seeded timetable: to_campus 07:30 09:30 11:30 13:30 15:30, to_hostel 12:30 14:30 16:30 18:30, Mon–Fri.
  * Settings: announcement 06:00, reminder lead 60, nudge 10, manifest lead 15, cutoff 5, 1 day ahead.
  */
@@ -9,7 +11,17 @@ import { IDS, book, one, resetDb, rows, scalar, tick, type TripRow } from "./hel
 
 let c: Client;
 
-const MON = "2026-10-27";
+/** ISO date n days after an ISO date. */
+const plusDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+/** The next Monday strictly after today (UTC), so every departure is in the future for book_seat(). */
+const MON = (() => {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + ((8 - d.getUTCDay()) % 7 || 7));
+  return d.toISOString().slice(0, 10);
+})();
+const TUE = plusDays(MON, 1);
+const WED = plusDays(MON, 2);
+const THU = plusDays(MON, 3);
 const at = (hhmm: string, date = MON) => `${date} ${hhmm}:00+00`;
 /** Departure epoch seconds, as embedded in the per-trip dedupe prefixes. */
 const epoch = (d: Date | string) => Math.round(new Date(d).getTime() / 1000);
@@ -46,7 +58,7 @@ describe("run_tick — a normal Monday", () => {
       expect(r.note).toBeNull(); // cleanup only once per date
     }
     expect(await scalar<string>(c, "select count(*) from trips")).toBe("18");
-    expect(await scalar<string>(c, "select count(*) from trips where service_date = '2026-10-28'")).toBe("9");
+    expect(await scalar<string>(c, `select count(*) from trips where service_date = '${TUE}'`)).toBe("9");
     expect(await scalar<string>(c, "select count(*) from notifications")).toBe("0");
     expect(await scalar<string>(c, "select count(*) from tick_runs")).toBe("51");
 
@@ -68,11 +80,11 @@ describe("run_tick — a normal Monday", () => {
   });
 
   it("skips service_days_off", async () => {
-    await c.query("insert into service_days_off (service_date, reason) values ('2026-10-29', 'Holiday')");
-    const created = await scalar<number>(c, "select materialize_trips('2026-10-29', '2026-10-30')");
+    await c.query(`insert into service_days_off (service_date, reason) values ('${WED}', 'Holiday')`);
+    const created = await scalar<number>(c, `select materialize_trips('${WED}', '${THU}')`);
     expect(created).toBe(9); // only Fri 30th
-    expect(await scalar<string>(c, "select count(*) from trips where service_date = '2026-10-29'")).toBe("0");
-    await c.query("delete from trips where service_date = '2026-10-30'");
+    expect(await scalar<string>(c, `select count(*) from trips where service_date = '${WED}'`)).toBe("0");
+    await c.query(`delete from trips where service_date = '${THU}'`);
   });
 
   it("enqueues the daily announcement exactly once at 06:00 with the day's to_campus times", async () => {
@@ -230,16 +242,16 @@ describe("run_tick — late first tick", () => {
   });
 
   it("skips the daily announcement when the first tick of the day is more than 2 h late", async () => {
-    const r = await tick(c, at("08:01", "2026-10-28"));
+    const r = await tick(c, at("08:01", TUE));
     expect(r.daily_enqueued).toBe(0);
-    expect(await scalar<string>(c, "select count(*) from notifications where kind = 'daily_announcement' and dedupe_key like 'daily:2026-10-28:%'")).toBe("0");
-    const later = await tick(c, at("09:00", "2026-10-28"));
+    expect(await scalar<string>(c, `select count(*) from notifications where kind = 'daily_announcement' and dedupe_key like 'daily:${TUE}:%'`)).toBe("0");
+    const later = await tick(c, at("09:00", TUE));
     expect(later.daily_enqueued).toBe(0);
   });
 
   it("respects daily_announcement_enabled = false", async () => {
     await c.query("update settings set daily_announcement_enabled = false where id = 1");
-    const r = await tick(c, at("06:00", "2026-10-29"));
+    const r = await tick(c, at("06:00", WED));
     expect(r.daily_enqueued).toBe(0);
     await c.query("update settings set daily_announcement_enabled = true where id = 1");
   });
@@ -350,9 +362,9 @@ describe("run_tick — admin edits", () => {
   });
 
   it("writes a plain 'cleanup:<date>' marker on the next local date", async () => {
-    const tue = await tick(c, at("00:01", "2026-10-28"));
-    expect(tue.note).toBe("cleanup:2026-10-28");
-    expect((await tick(c, at("00:02", "2026-10-28"))).note).toBeNull();
+    const tue = await tick(c, at("00:01", TUE));
+    expect(tue.note).toBe(`cleanup:${TUE}`);
+    expect((await tick(c, at("00:02", TUE))).note).toBeNull();
   });
 });
 

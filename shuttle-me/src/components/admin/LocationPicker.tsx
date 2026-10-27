@@ -46,6 +46,7 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
 
   useEffect(() => {
     let cancelled = false;
+    let unsubScheme: (() => void) | null = null;
     (async () => {
       const L = (await import("leaflet")).default ?? (await import("leaflet"));
       if (cancelled || !containerRef.current || mapRef.current) return;
@@ -71,7 +72,8 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
       };
       applyScheme();
       mq.addEventListener("change", applyScheme);
-      map.once("remove", () => mq.removeEventListener("change", applyScheme));
+      // Leaflet's Map.remove() fires "unload" (not "remove"), so detach in the effect cleanup below.
+      unsubScheme = () => mq.removeEventListener("change", applyScheme);
       if (lat != null && lng != null) markerRef.current = L.marker(start, { icon: pinIcon(L) }).addTo(map);
       map.on("click", (e: Leaflet.LeafletMouseEvent) => {
         const next: [number, number] = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];
@@ -82,6 +84,8 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
     })().catch((err: unknown) => setError(err instanceof Error ? err.message : "Map could not load"));
     return () => {
       cancelled = true;
+      unsubScheme?.();
+      unsubScheme = null;
       mapRef.current?.remove();
       mapRef.current = null;
       markerRef.current = null;
