@@ -22,6 +22,10 @@ export default async function DriverTrackPage({ params }: { params: Promise<{ id
         location_stale_seconds: settings.location_stale_seconds,
         hostel_name: settings.hostel_name,
         campus_name: settings.campus_name,
+        hostel_lat: settings.hostel_lat,
+        hostel_lng: settings.hostel_lng,
+        campus_lat: settings.campus_lat,
+        campus_lng: settings.campus_lng,
       }}
     />
   );

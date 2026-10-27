@@ -13,6 +13,7 @@ import { useDriverTracking } from "@/hooks/useDriverTracking";
 import { useRealtimeInvalidate } from "@/hooks/useRealtimeInvalidate";
 import type { RequestWithRider } from "@/lib/data/driver";
 import LiveTripMapLoader from "@/components/map/LiveTripMapLoader";
+import { tripDestination } from "@/lib/trips/endpoints";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Page } from "@/components/layout/Page";
 import { Banner, Button, Caption, Card, LiveChip, Pill, Sheet, StatTile, useToast } from "@/components/ui";
@@ -22,7 +23,16 @@ import { TripStatusActions } from "./TripStatusActions";
 export type TrackingPanelProps = {
   trip: Trip;
   pickupLocations: PickupLocation[];
-  settings: { timezone: string; location_stale_seconds: number; hostel_name: string; campus_name: string };
+  settings: {
+    timezone: string;
+    location_stale_seconds: number;
+    hostel_name: string;
+    campus_name: string;
+    hostel_lat?: number | null;
+    hostel_lng?: number | null;
+    campus_lat?: number | null;
+    campus_lng?: number | null;
+  };
 };
 
 const STATUS_COPY = {
@@ -35,6 +45,12 @@ const STATUS_COPY = {
 
 /** The driver's live tracking screen: big status, start/stop, GPS stats, paused banner, map preview, incoming requests. */
 export function TrackingPanel({ trip, pickupLocations, settings }: TrackingPanelProps) {
+  const dest = tripDestination(
+    trip,
+    { hostel_lat: settings.hostel_lat ?? null, hostel_lng: settings.hostel_lng ?? null, campus_lat: settings.campus_lat ?? null, campus_lng: settings.campus_lng ?? null },
+    pickupLocations,
+  );
+  const destination = dest ? { ...dest, name: trip.direction === "to_campus" ? settings.campus_name : settings.hostel_name } : null;
   const router = useRouter();
   const { toast } = useToast();
   const tracking = useDriverTracking(trip.id);
@@ -200,7 +216,7 @@ export function TrackingPanel({ trip, pickupLocations, settings }: TrackingPanel
 
       <div>
         <Caption>Riders see this</Caption>
-        <LiveTripMapLoader tripId={trip.id} initialTrip={trip} pickupLocations={pickupLocations} settings={settings} compact />
+        <LiveTripMapLoader tripId={trip.id} initialTrip={trip} pickupLocations={pickupLocations} settings={settings} destination={destination} compact />
       </div>
 
       {!finished ? (

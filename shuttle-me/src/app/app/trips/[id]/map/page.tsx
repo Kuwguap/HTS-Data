@@ -6,6 +6,7 @@ import { requirePageAuth } from "@/lib/auth/page";
 import { getActivePickupLocations, getSettings } from "@/lib/data/settings";
 import { getTripForStudent } from "@/lib/data/student";
 import { formatAgo, formatTime } from "@/lib/time";
+import { tripDestination } from "@/lib/trips/endpoints";
 import { BOOKING_STATUS_LABEL, BOOKING_STATUS_TONE, TRIP_STATUS_LABEL, directionShort, isActiveBooking, isTripLive } from "@/lib/trips";
 import { uuid } from "@/lib/validation/common";
 
@@ -22,6 +23,8 @@ export default async function TripMapPage({ params }: { params: Promise<{ id: st
   const live = isTripLive(trip, settings, now);
   const mine = isActiveBooking(trip.my_booking) ? trip.my_booking : null;
   const { my_booking: _mine, ...plainTrip } = trip;
+  const dest = tripDestination(trip, settings, pickupLocations);
+  const destination = dest ? { ...dest, name: trip.direction === "to_campus" ? settings.campus_name : settings.hostel_name } : null;
 
   return (
     <main className="k-shell">
@@ -47,6 +50,7 @@ export default async function TripMapPage({ params }: { params: Promise<{ id: st
             initialTrip={plainTrip}
             pickupLocations={pickupLocations}
             myPickupLocationId={mine?.pickup_location_id ?? null}
+            destination={destination}
             myBookingStatus={mine?.status ?? null}
             settings={{
               timezone: settings.timezone,

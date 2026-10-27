@@ -19,6 +19,8 @@ export type LiveTripMapProps = {
   /** The viewer's booking status: only a `confirmed` (not yet boarded) rider's pickup becomes a via point of the road route. */
   myBookingStatus?: BookingStatus | null;
   settings: { timezone: string; location_stale_seconds: number; hostel_name: string; campus_name: string };
+  /** Where the trip ends (hostel or campus), labelled with its name; omitted when unknown. */
+  destination?: { lat: number; lng: number; name: string } | null;
   /** Small 220px preview (driver tracking screen) instead of a tall map. */
   compact?: boolean;
 };
@@ -81,6 +83,16 @@ function pinIcon(mine: boolean): L.DivIcon {
   });
 }
 
+function destinationIcon(): L.DivIcon {
+  return L.divIcon({
+    className: "k-pin-marker",
+    html: `<span aria-hidden="true">🏁</span>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 26],
+    tooltipAnchor: [0, -24],
+  });
+}
+
 const roundBtn: React.CSSProperties = {
   width: 44,
   height: 44,
@@ -96,7 +108,7 @@ const roundBtn: React.CSSProperties = {
  * CSS-darkened, see src/lib/map/tiles.ts), round zoom / centre buttons and a
  * LIVE / last-seen chip.
  */
-export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, myBookingStatus, settings, compact }: LiveTripMapProps) {
+export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, myBookingStatus, settings, destination, compact }: LiveTripMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileRef = useRef<L.TileLayer | null>(null);
@@ -105,6 +117,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
   const trailCasingRef = useRef<L.Polyline | null>(null);
   const routeRef = useRef<L.Polyline | null>(null);
   const pinsRef = useRef<L.LayerGroup | null>(null);
+  const destRef = useRef<L.Marker | null>(null);
   const fittedRef = useRef(false);
   const routeFittedRef = useRef(false);
   const [follow, setFollow] = useState(true);
@@ -208,6 +221,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       trailCasingRef.current = null;
       routeRef.current = null;
       pinsRef.current = null;
+      destRef.current = null;
       fittedRef.current = false;
       routeFittedRef.current = false;
     };
@@ -221,11 +235,31 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     for (const p of pickupLocations) {
       const mine = p.id === myPickupLocationId;
       const m = L.marker([p.lat, p.lng], { icon: pinIcon(mine), interactive: true, keyboard: false, zIndexOffset: mine ? 500 : 0 });
-      if (mine) m.bindTooltip("You", { permanent: true, direction: "top", className: "k-map-tip" });
-      else m.bindTooltip(p.name, { direction: "top" });
+      // Every stop shows its name, like the place names on the basemap; the viewer's own stop is highlighted.
+      m.bindTooltip(mine ? `You · ${p.name}` : p.name, {
+        permanent: true,
+        direction: "top",
+        className: mine ? "k-map-tip k-map-tip--mine" : "k-map-tip",
+        opacity: 1,
+        interactive: false,
+      });
       group.addLayer(m);
     }
   }, [pickupLocations, myPickupLocationId]);
+
+  // Destination flag with the hostel/campus name (skipped when it coincides with a pickup pin, which already carries a label).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    destRef.current?.remove();
+    destRef.current = null;
+    if (!destination) return;
+    const onAPin = pickupLocations.some((p) => haversineM(p, destination) < 25);
+    if (onAPin) return;
+    const m = L.marker([destination.lat, destination.lng], { icon: destinationIcon(), interactive: false, keyboard: false, zIndexOffset: 400 }).addTo(map);
+    m.bindTooltip(destination.name, { permanent: true, direction: "top", className: "k-map-tip k-map-tip--dest", opacity: 1, interactive: false });
+    destRef.current = m;
+  }, [destination, pickupLocations]);
 
   // Trail: the road-snapped geometry when the matcher answered, else every raw fix from the first on.
   useEffect(() => {
@@ -242,6 +276,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     if (!follow) return;
     const pts: L.LatLngTuple[] = [...pickupLocations.map(toTuple), ...route.geometry.map(toTuple)];
     if (busPos) pts.push([busPos.lat, busPos.lng]);
+    if (destination) pts.push([destination.lat, destination.lng]);
     map.fitBounds(L.latLngBounds(pts), { padding: [36, 36], maxZoom: 16 });
     fittedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fit once when the first route lands; later bus/pin changes must not refit
@@ -264,6 +299,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       const pts: L.LatLngTuple[] = pickupLocations.map(toTuple);
       if (busPos) pts.push([busPos.lat, busPos.lng]);
       if (route) pts.push(...route.geometry.map(toTuple));
+      if (destination) pts.push([destination.lat, destination.lng]);
       if (pts.length >= 2) {
         map.fitBounds(L.latLngBounds(pts), { padding: [36, 36], maxZoom: 16 });
         fittedRef.current = true;
