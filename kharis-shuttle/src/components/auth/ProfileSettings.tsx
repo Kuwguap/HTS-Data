@@ -18,6 +18,7 @@ import type { PublicProfile } from "@/lib/auth/session";
 import { APP_NAME } from "@/lib/constants";
 import { PIN_RE } from "@/lib/validation/common";
 import { LogoutButton } from "./LogoutButton";
+import { STAFF_ALERTS_TITLE, staffAlertsSubtitle } from "./staffAlerts";
 
 export type ProfileSettingsProps = {
   profile: PublicProfile;
@@ -182,6 +183,7 @@ export function ProfileSettings({ profile: initial, appVersion, enquiryPhone }: 
     }
   };
 
+  const isStaff = profile.role !== "student";
   const tel = enquiryPhone ? enquiryPhone.replace(/\s+/g, "") : null;
   const installValue = !env.ready ? "…" : env.isStandalone ? "✅ Home Screen app" : env.isIOS ? "Safari · not installed" : "Browser";
   const pinType = showPins ? "text" : "password";
@@ -202,12 +204,17 @@ export function ProfileSettings({ profile: initial, appVersion, enquiryPhone }: 
         <Row label="Phone" value={profile.phone || "—"} onClick={openEdit} chevron aria-label="Edit phone" />
       </List>
 
-      <List caption="Reminders">
-        <Row
-          title="Shuttle reminders"
-          subtitle="Before each departure, and a nudge when it's about to leave"
-          trailing={<Switch checked={profile.reminders_enabled} onChange={toggleReminders} label="Shuttle reminders" disabled={remBusy} />}
-        />
+      <List caption={isStaff ? "Alerts" : "Reminders"}>
+        {isStaff ? (
+          // Duty alerts: delivery ignores reminders_enabled for drivers and admins, so there is nothing to toggle.
+          <Row title={STAFF_ALERTS_TITLE} subtitle={staffAlertsSubtitle(profile.role)} />
+        ) : (
+          <Row
+            title="Shuttle reminders"
+            subtitle="Before each departure, and a nudge when it's about to leave"
+            trailing={<Switch checked={profile.reminders_enabled} onChange={toggleReminders} label="Shuttle reminders" disabled={remBusy} />}
+          />
+        )}
         <Row>
           <EnableNotifications allowDisable testAfterEnable={false} />
         </Row>

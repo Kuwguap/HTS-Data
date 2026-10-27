@@ -8,10 +8,12 @@ import { getSettings } from "@/lib/data/settings";
 import { formatTime, localDateString } from "@/lib/time";
 import { directionShort, TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips";
 import { isoDate } from "@/lib/validation/common";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminTripsPage({ searchParams }: { searchParams: Promise<{ date?: string }> }) {
+  await requirePageAuth({ role: "admin" });
   const [settings, params] = await Promise.all([getSettings(), searchParams]);
   const today = localDateString(new Date(), settings.timezone);
   const parsed = isoDate.safeParse(params.date ?? today);

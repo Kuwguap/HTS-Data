@@ -2,17 +2,18 @@ import { AppHeader } from "@/components/layout/AppHeader";
 import { Page } from "@/components/layout/Page";
 import { LogoutRow } from "@/components/admin/LogoutRow";
 import { Art, List, Row } from "@/components/ui";
-import { getAuthContext } from "@/lib/auth/require";
+import { requirePageAuth } from "@/lib/auth/page";
 import { APP_NAME } from "@/lib/constants";
 import { getSettings } from "@/lib/data/settings";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminMorePage() {
-  const [ctx, settings] = await Promise.all([getAuthContext(), getSettings()]);
+  const ctx = await requirePageAuth({ role: "admin" });
+  const settings = await getSettings();
   return (
     <Page>
-      <AppHeader title="More" greeting={ctx ? `${settings.hostel_name} · ${ctx.profile.full_name}` : settings.hostel_name} />
+      <AppHeader title="More" greeting={`${settings.hostel_name} · ${ctx.profile.full_name}`} />
 
       <List caption="Operations">
         <Row nav href="/admin/trips" leading={<Art k="bus" size={32} />} title="Trips" subtitle="Today's departures, extra trips, cancellations" />

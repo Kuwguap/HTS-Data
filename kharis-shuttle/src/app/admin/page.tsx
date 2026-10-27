@@ -3,7 +3,7 @@ import { AppHeader } from "@/components/layout/AppHeader";
 import { Page } from "@/components/layout/Page";
 import { TickButton } from "@/components/admin/TickButton";
 import { Art, Banner, Caption, Empty, List, Pill, Row, StatTile } from "@/components/ui";
-import { getAuthContext } from "@/lib/auth/require";
+import { requirePageAuth } from "@/lib/auth/page";
 import { isManualTick, overview } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import { formatAgo, formatShortDate, formatTime } from "@/lib/time";
@@ -12,8 +12,9 @@ import { directionShort, TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips
 export const dynamic = "force-dynamic";
 
 export default async function AdminOverviewPage() {
+  const ctx = await requirePageAuth({ role: "admin" });
   const now = new Date();
-  const [ctx, settings, data] = await Promise.all([getAuthContext(), getSettings(), overview(now)]);
+  const [settings, data] = await Promise.all([getSettings(), overview(now)]);
   const tick = data.tick;
   const tickAgeMin = tick.ageSeconds == null ? null : Math.round(tick.ageSeconds / 60);
   const tickValue = tick.last ? (tick.ok ? "ok" : "⚠️") : "—";
@@ -22,7 +23,7 @@ export default async function AdminOverviewPage() {
       ? `Last automatic tick · ${formatAgo(tick.last.ran_at, now)}`
       : `No automatic tick for ${tickAgeMin} min`
     : "No automatic tick yet";
-  const firstName = ctx?.profile.full_name.split(" ")[0] ?? "";
+  const firstName = ctx.profile.full_name.split(" ")[0] ?? "";
 
   return (
     <Page>

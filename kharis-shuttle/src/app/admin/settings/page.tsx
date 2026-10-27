@@ -4,10 +4,12 @@ import { SettingsForm } from "@/components/admin/SettingsForm";
 import { listDrivers } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import { formatAgo } from "@/lib/time";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminSettingsPage() {
+  await requirePageAuth({ role: "admin" });
   const [settings, drivers] = await Promise.all([getSettings(), listDrivers()]);
   const updated = new Date(settings.updated_at).getTime() > 0 ? `Last saved ${formatAgo(settings.updated_at)}` : "Defaults";
   return (

@@ -16,14 +16,17 @@ export const GET = withHandler(async () => {
 
 /** PATCH /api/me — update own name/phone/room/reminders; `onboarded: true` stamps onboarded_at. */
 export const PATCH = withHandler(async (request) => {
-  const { user } = await requireUser();
+  const { user, profile } = await requireUser();
   const input = await parseBody(request, updateProfileSchema);
 
   const patch: TablesUpdate<"profiles"> = {};
   if (input.full_name !== undefined) patch.full_name = input.full_name;
   if (input.phone !== undefined) patch.phone = input.phone;
   if (input.room !== undefined) patch.room = input.room;
-  if (input.reminders_enabled !== undefined) patch.reminders_enabled = input.reminders_enabled;
+  // Only students have a reminders preference. Driver/admin alerts (manifests, booking
+  // changes, pickup requests) are duty alerts that delivery sends regardless, so the
+  // flag is ignored for staff to keep the stored value meaningless-but-harmless.
+  if (input.reminders_enabled !== undefined && profile.role === "student") patch.reminders_enabled = input.reminders_enabled;
   if (input.onboarded) patch.onboarded_at = new Date().toISOString();
 
   const admin = createAdminClient();

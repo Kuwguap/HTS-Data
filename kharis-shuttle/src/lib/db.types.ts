@@ -692,6 +692,10 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      record_login_failure: {
+        Args: { p_username: string; p_max_failures?: number; p_lockout_minutes?: number };
+        Returns: Database["public"]["Tables"]["login_attempts"]["Row"];
+      };
       my_role: {
         Args: Record<PropertyKey, never>;
         Returns: UserRole;

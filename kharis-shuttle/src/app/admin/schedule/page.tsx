@@ -3,10 +3,12 @@ import { Page } from "@/components/layout/Page";
 import { ScheduleEditor } from "@/components/admin/ScheduleEditor";
 import { listSchedule } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminSchedulePage() {
+  await requirePageAuth({ role: "admin" });
   const [settings, schedule] = await Promise.all([getSettings(), listSchedule()]);
   return (
     <Page>

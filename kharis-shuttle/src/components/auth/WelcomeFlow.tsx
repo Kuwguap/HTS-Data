@@ -23,6 +23,7 @@ import type { PublicProfile } from "@/lib/auth/session";
 import { APP_NAME, HOME_BY_ROLE } from "@/lib/constants";
 import type { Settings } from "@/lib/db.types";
 import { safeNextPath } from "@/lib/validation/common";
+import { STAFF_ALERTS_TITLE, staffAlertsSubtitle } from "./staffAlerts";
 
 export type WelcomeFlowProps = {
   profile: PublicProfile;
@@ -62,10 +63,12 @@ export function WelcomeFlow({ profile, settings, next: rawNext }: WelcomeFlowPro
     setBusy(true);
     setFieldErrors({});
     try {
+      // Staff alerts (manifests, pickup requests) are duty alerts and always on; only
+      // students have a reminders preference, so staff never send one.
       const res = await api.patch<{ profile: PublicProfile; home: string }>("/api/me", {
         room: room.trim() || null,
         phone: phone.trim() || null,
-        reminders_enabled: reminders,
+        ...(isStaff ? {} : { reminders_enabled: reminders }),
         onboarded: true,
       });
       toast("🎉 You're all set", { tone: "green" });
@@ -158,12 +161,16 @@ export function WelcomeFlow({ profile, settings, next: rawNext }: WelcomeFlowPro
               />
             </div>
           </Card>
-          <List caption="Reminders">
-            <Row
-              title={isStaff ? "Trip alerts" : "Shuttle reminders"}
-              subtitle={isStaff ? "Rider lists and pickup requests" : `Before each departure to ${settings.campus_name}`}
-              trailing={<Switch checked={reminders} onChange={setReminders} label="Shuttle reminders" disabled={busy} />}
-            />
+          <List caption={isStaff ? "Alerts" : "Reminders"}>
+            {isStaff ? (
+              <Row title={STAFF_ALERTS_TITLE} subtitle={staffAlertsSubtitle(profile.role)} />
+            ) : (
+              <Row
+                title="Shuttle reminders"
+                subtitle={`Before each departure to ${settings.campus_name}`}
+                trailing={<Switch checked={reminders} onChange={setReminders} label="Shuttle reminders" disabled={busy} />}
+              />
+            )}
           </List>
           <Button size="big" onClick={finish} loading={busy}>
             ✅ Done

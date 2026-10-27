@@ -4,10 +4,12 @@ import { DaysOffEditor } from "@/components/admin/DaysOffEditor";
 import { listDaysOff } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import { localDateString } from "@/lib/time";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminDaysOffPage() {
+  await requirePageAuth({ role: "admin" });
   const [settings, daysOff] = await Promise.all([getSettings(), listDaysOff()]);
   const today = localDateString(new Date(), settings.timezone);
   return (

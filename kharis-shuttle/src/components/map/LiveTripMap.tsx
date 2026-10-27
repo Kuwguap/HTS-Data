@@ -123,7 +123,8 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
         if ((tileRef.current as L.TileLayer & { _url?: string })._url === url) return;
         tileRef.current.remove();
       }
-      tileRef.current = L.tileLayer(url, { attribution: ATTRIBUTION, maxZoom: 19, detectRetina: false }).addTo(map);
+      // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
+      tileRef.current = L.tileLayer(url, { attribution: ATTRIBUTION, maxZoom: 19, detectRetina: false, crossOrigin: true }).addTo(map);
       trailRef.current?.setStyle({ color: accentColor() });
     };
     applyTiles();

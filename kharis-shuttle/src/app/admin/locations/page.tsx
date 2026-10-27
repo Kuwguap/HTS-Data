@@ -3,10 +3,12 @@ import { Page } from "@/components/layout/Page";
 import { LocationsEditor } from "@/components/admin/LocationsEditor";
 import { listLocations } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminLocationsPage() {
+  await requirePageAuth({ role: "admin" });
   const [settings, locations] = await Promise.all([getSettings(), listLocations()]);
   return (
     <Page>

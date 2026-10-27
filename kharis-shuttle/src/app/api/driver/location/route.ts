@@ -64,7 +64,10 @@ export const POST = withHandler(async (request) => {
 
   if (rows.length > 0) {
     const { error } = await admin.from("trip_locations").insert(rows);
-    if (error) throw new ApiError(500, "INTERNAL", "Could not save the location.", error.message);
+    if (error) {
+      console.error("[driver/location] insert failed:", error.message);
+      throw new ApiError(500, "INTERNAL", "Could not save the location.");
+    }
   }
 
   return new Response(null, { status: 204 });

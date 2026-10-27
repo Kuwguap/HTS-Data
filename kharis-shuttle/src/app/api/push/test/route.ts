@@ -1,11 +1,20 @@
 import { ok, withHandler } from "@/lib/api";
 import { requireUser } from "@/lib/auth/require";
+import { HOME_BY_ROLE } from "@/lib/constants";
+import type { UserRole } from "@/lib/db.types";
 import { enqueueNotification } from "@/lib/notify/enqueue";
 import { drainOutbox } from "@/lib/push/drain";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
+
+/** Where tapping the test push lands: each role's own settings/account screen. */
+const SETTINGS_URL_BY_ROLE: Record<UserRole, string> = {
+  student: `${HOME_BY_ROLE.student}/settings`,
+  driver: `${HOME_BY_ROLE.driver}/settings`,
+  admin: `${HOME_BY_ROLE.admin}/account`,
+};
 
 /**
  * POST /api/push/test — send the caller a "Notifications are on" push right now
@@ -27,7 +36,7 @@ export const POST = withHandler(async () => {
     userIds: [user.id],
     kind: "test",
     vars: { name: profile.full_name.split(" ")[0] ?? profile.full_name },
-    url: "/app/settings",
+    url: SETTINGS_URL_BY_ROLE[profile.role],
     dedupePrefix,
     ttlSeconds: 120,
     urgency: "high",

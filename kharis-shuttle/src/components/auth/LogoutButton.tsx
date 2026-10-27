@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Button, type ButtonSize, type ButtonVariant } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api-client";
+import { detachDeviceSubscription } from "@/lib/push/client";
 
 export type LogoutButtonProps = {
   variant?: ButtonVariant;
@@ -23,6 +24,8 @@ export function LogoutButton({ variant = "dangerSoft", size = "md", pill, classN
   const logout = async () => {
     if (busy) return;
     setBusy(true);
+    // Shared phone: stop this device's pushes reaching the next person who logs in.
+    await detachDeviceSubscription();
     try {
       await api.post("/api/auth/logout");
     } catch {

@@ -28,7 +28,10 @@ export const POST = withHandler(async (request) => {
     },
     { onConflict: "endpoint" },
   );
-  if (error) throw new ApiError(500, "INTERNAL", "Could not save the subscription.", error.message);
+  if (error) {
+    console.error("[push] subscribe upsert failed:", error.message);
+    throw new ApiError(500, "INTERNAL", "Could not save the subscription.");
+  }
 
   return ok({ ok: true, endpoint: body.endpoint });
 });
@@ -40,7 +43,10 @@ export const DELETE = withHandler(async (request) => {
   const admin = createAdminClient();
 
   const { error } = await admin.from("push_subscriptions").delete().eq("endpoint", body.endpoint).eq("user_id", user.id);
-  if (error) throw new ApiError(500, "INTERNAL", "Could not remove the subscription.", error.message);
+  if (error) {
+    console.error("[push] unsubscribe delete failed:", error.message);
+    throw new ApiError(500, "INTERNAL", "Could not remove the subscription.");
+  }
 
   return ok({ ok: true });
 });

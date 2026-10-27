@@ -3,10 +3,12 @@ import { Page } from "@/components/layout/Page";
 import { TemplatesEditor } from "@/components/admin/TemplatesEditor";
 import { listTemplates } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminTemplatesPage() {
+  await requirePageAuth({ role: "admin" });
   const [settings, templates] = await Promise.all([getSettings(), listTemplates()]);
   return (
     <Page>

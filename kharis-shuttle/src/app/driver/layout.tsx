@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { requirePageAuth } from "@/lib/auth/page";
 import { pendingRequestCount } from "@/lib/data/driver";
 import { TabBar } from "@/components/layout/TabBar";
+import { PushResync } from "@/components/pwa/PushResync";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,7 @@ export default async function DriverLayout({ children }: { children: ReactNode }
   const pending = await pendingRequestCount();
   return (
     <>
+      <PushResync />
       {children}
       <TabBar
         items={[

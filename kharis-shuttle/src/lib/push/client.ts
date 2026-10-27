@@ -95,3 +95,44 @@ export async function deleteSubscription(endpoint: string): Promise<number> {
   });
   return res.status;
 }
+
+/**
+ * The device's current PushSubscription, or null. Reads only: never registers the
+ * worker (`getRegistration`, not `.ready`, which never resolves without one) and
+ * never touches Notification permission.
+ */
+async function currentSubscription(): Promise<PushSubscription | null> {
+  if (typeof window === "undefined" || !serviceWorkerEnabled() || !("serviceWorker" in navigator)) return null;
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  return (await reg?.pushManager.getSubscription()) ?? null;
+}
+
+/**
+ * Before logging out: detach this device's push endpoint from the signed-in user
+ * (DELETE /api/push/subscribe is scoped to the caller). The browser subscription is
+ * kept so the next person to log in on this phone re-claims it silently via
+ * `resyncDeviceSubscription()`. Best effort: errors are swallowed.
+ */
+export async function detachDeviceSubscription(): Promise<void> {
+  try {
+    const sub = await currentSubscription();
+    if (sub) await deleteSubscription(sub.endpoint);
+  } catch {
+    // Best effort; the logout must go ahead regardless.
+  }
+}
+
+/**
+ * After signing in / on every app load: if notifications are already granted and the
+ * device holds a subscription, re-POST it so the row is attached to the current user
+ * (upsert on endpoint). Never prompts for permission. Best effort: errors are swallowed.
+ */
+export async function resyncDeviceSubscription(): Promise<void> {
+  try {
+    if (notificationPermission() !== "granted") return;
+    const sub = await currentSubscription();
+    if (sub) await postSubscription(sub);
+  } catch {
+    // Signed-out pages answer 401 and a missing worker just means nothing to do.
+  }
+}

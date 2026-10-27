@@ -217,15 +217,20 @@ describe("set_booking_status / promote_waitlist", () => {
     await assertCountersConsistent(c, t.id);
     expect(await rows(c, "select * from promote_waitlist($1)", [t.id])).toHaveLength(0);
 
-    // no_show → confirmed re-seats (over capacity is the driver's call)
-    const reseated = await one<BookingRow>(c, "select * from set_booking_status($1, 'confirmed', $2)", [b2.id, IDS.driver]);
-    expect(reseated.status).toBe("confirmed");
-    expect((await trip(c, t.id)).confirmed_count).toBe(3);
+    // no_show → confirmed re-seats only while a seat is free: the bus is full again
+    expect(await errorOf(c, "select set_booking_status($1, 'confirmed', $2)", [b2.id, IDS.driver])).toMatch(/^CONFLICT:/);
+    expect((await trip(c, t.id)).confirmed_count).toBe(2);
     await assertCountersConsistent(c, t.id);
 
     // cancelled via set_booking_status delegates to cancel_booking
     const cancelled = await one<BookingRow>(c, "select * from set_booking_status($1, 'cancelled', $2)", [b1.id, IDS.driver]);
     expect(cancelled.status).toBe("cancelled");
+    expect((await trip(c, t.id)).confirmed_count).toBe(1);
+    await assertCountersConsistent(c, t.id);
+
+    // ... and with that seat free the no_show rider can be re-seated
+    const reseated = await one<BookingRow>(c, "select * from set_booking_status($1, 'confirmed', $2)", [b2.id, IDS.driver]);
+    expect(reseated.status).toBe("confirmed");
     expect((await trip(c, t.id)).confirmed_count).toBe(2);
     await assertCountersConsistent(c, t.id);
 
@@ -241,6 +246,73 @@ describe("set_booking_status / promote_waitlist", () => {
     expect(await errorOf(c, "select set_booking_status($1, 'boarded')", ["00000000-0000-4000-8000-000000000000"])).toMatch(
       /^NOT_FOUND:/,
     );
+  });
+
+  it("refuses to re-seat a no_show rider (Undo) once the freed seat went to the waitlist", async () => {
+    const t = await makeTrip(c, { capacity: 2 });
+    const b1 = await book(c, IDS.s1, t.id);
+    const b2 = await book(c, IDS.s2, t.id);
+    const w1 = await book(c, IDS.s3, t.id); // waitlist 1
+    expect((await trip(c, t.id)).confirmed_count).toBe(2);
+
+    // driver marks s1 a no-show; the route then promotes the waitlist
+    await c.query("select set_booking_status($1, 'no_show', $2)", [b1.id, IDS.driver]);
+    const promoted = await rows<BookingRow>(c, "select * from promote_waitlist($1)", [t.id]);
+    expect(promoted.map((p) => p.id)).toEqual([w1.id]);
+    let tr = await trip(c, t.id);
+    expect(tr.confirmed_count).toBe(2);
+    expect(tr.waitlist_count).toBe(0);
+
+    // the driver taps "Undo": the bus is full, so it is refused and nothing changes
+    const err = await errorOf(c, "select set_booking_status($1, 'confirmed', $2)", [b1.id, IDS.driver]);
+    expect(err).toMatch(/^CONFLICT: Trip is full/);
+    tr = await trip(c, t.id);
+    expect(tr.confirmed_count).toBe(tr.seat_capacity);
+    expect(tr.waitlist_count).toBe(0);
+    expect(await scalar<string>(c, "select status from bookings where id = $1", [b1.id])).toBe("no_show");
+    expect(await scalar<string>(c, "select status from bookings where id = $1", [w1.id])).toBe("confirmed");
+    expect(await scalar<string>(c, "select status from bookings where id = $1", [b2.id])).toBe("confirmed");
+    await assertCountersConsistent(c, t.id);
+
+    // a cancelled rider cannot be re-seated onto a full bus either
+    await c.query("select cancel_booking($1, $2)", [IDS.s2, b2.id]); // no one waiting: seat simply frees
+    const again = await book(c, IDS.admin, t.id); // full again
+    expect(again.status).toBe("confirmed");
+    expect(await errorOf(c, "select set_booking_status($1, 'confirmed', $2)", [b2.id, IDS.driver])).toMatch(/^CONFLICT: Trip is full/);
+    expect((await trip(c, t.id)).confirmed_count).toBe(2);
+    await assertCountersConsistent(c, t.id);
+
+    // the driver's deliberate override still works: a no_show rider at the gate can board
+    const boarded = await one<BookingRow>(c, "select * from set_booking_status($1, 'boarded', $2)", [b1.id, IDS.driver]);
+    expect(boarded.status).toBe("boarded");
+    expect((await trip(c, t.id)).confirmed_count).toBe(3);
+    await assertCountersConsistent(c, t.id);
+  });
+
+  it("re-seats a no_show rider (Undo) while a seat is still free and counts it", async () => {
+    const t = await makeTrip(c, { capacity: 2 });
+    const b1 = await book(c, IDS.s1, t.id);
+    await book(c, IDS.s2, t.id);
+
+    // no waitlist: the no-show frees a seat that nobody takes
+    await c.query("select set_booking_status($1, 'no_show', $2)", [b1.id, IDS.driver]);
+    expect(await rows(c, "select * from promote_waitlist($1)", [t.id])).toHaveLength(0);
+    expect((await trip(c, t.id)).confirmed_count).toBe(1);
+
+    const undone = await one<BookingRow>(c, "select * from set_booking_status($1, 'confirmed', $2)", [b1.id, IDS.driver]);
+    expect(undone.status).toBe("confirmed");
+    expect(undone.boarded_at).toBeNull();
+    expect((await trip(c, t.id)).confirmed_count).toBe(2);
+    await assertCountersConsistent(c, t.id);
+
+    // same for a cancelled rider with a free seat (capacity raised)
+    await c.query("select cancel_booking($1, $2)", [IDS.s1, b1.id]);
+    expect((await trip(c, t.id)).confirmed_count).toBe(1);
+    const reseated = await one<BookingRow>(c, "select * from set_booking_status($1, 'confirmed', $2)", [b1.id, IDS.driver]);
+    expect(reseated.status).toBe("confirmed");
+    expect(reseated.cancelled_at).toBeNull();
+    expect((await trip(c, t.id)).confirmed_count).toBe(2);
+    await assertCountersConsistent(c, t.id);
   });
 
   it("boards a waitlisted rider directly and renumbers", async () => {

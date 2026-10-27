@@ -14,6 +14,12 @@ export type TabItem = {
   badge?: number | null;
   /** Noun for the badge in the link's accessible name ("Inbox, 3 unread"). Default "unread". */
   badgeLabel?: string;
+  /**
+   * Extra path prefixes this tab owns besides `href` (e.g. the admin More tab owns
+   * "/admin/trips", "/admin/settings", …). An explicit match beats a shorter tab href
+   * such as the bare "/admin", which stays exact for Overview.
+   */
+  match?: string[];
 };
 
 /** Accessible name for a tab link: "Inbox", or "Inbox, 3 unread" when a badge shows. */
@@ -28,12 +34,27 @@ export type TabBarProps = {
   className?: string;
 };
 
-/** The tab whose href is the longest prefix of the pathname is active. */
-export function activeTabHref(pathname: string, hrefs: string[]): string | null {
+function isPrefixOf(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(prefix.endsWith("/") ? prefix : prefix + "/");
+}
+
+/**
+ * The tab whose href (or one of its extra `match` prefixes) is the longest prefix of
+ * the pathname is active. Longest wins, so an explicit match such as "/admin/trips"
+ * on the More tab beats the bare "/admin" of Overview, while "/admin" itself stays
+ * with Overview. Plain strings are accepted as tabs with no extra matches.
+ */
+export function activeTabHref(pathname: string, tabs: ReadonlyArray<string | Pick<TabItem, "href" | "match">>): string | null {
   let best: string | null = null;
-  for (const href of hrefs) {
-    const matches = pathname === href || pathname.startsWith(href.endsWith("/") ? href : href + "/");
-    if (matches && (best === null || href.length > best.length)) best = href;
+  let bestLength = -1;
+  for (const tab of tabs) {
+    const { href, match } = typeof tab === "string" ? { href: tab, match: undefined } : tab;
+    for (const prefix of [href, ...(match ?? [])]) {
+      if (isPrefixOf(pathname, prefix) && prefix.length > bestLength) {
+        best = href;
+        bestLength = prefix.length;
+      }
+    }
   }
   return best;
 }
@@ -52,7 +73,7 @@ export function activeTabHref(pathname: string, hrefs: string[]): string | null 
  */
 export function TabBar({ items, className }: TabBarProps) {
   const pathname = usePathname() ?? "";
-  const active = activeTabHref(pathname, items.map((i) => i.href));
+  const active = activeTabHref(pathname, items);
   return (
     <nav className={["k-tabbar", className ?? ""].join(" ").trim()} aria-label="Main">
       <div className="k-tabbar-row">

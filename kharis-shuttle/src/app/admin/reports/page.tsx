@@ -7,10 +7,12 @@ import { getSettings } from "@/lib/data/settings";
 import { addDays, formatShortDate, localDateString } from "@/lib/time";
 import { TRIP_STATUS_LABEL, TRIP_STATUS_TONE } from "@/lib/trips";
 import { isoDate } from "@/lib/validation/common";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminReportsPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
+  await requirePageAuth({ role: "admin" });
   const [settings, params] = await Promise.all([getSettings(), searchParams]);
   const now = new Date();
   const tz = settings.timezone;

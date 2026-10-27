@@ -167,11 +167,29 @@ describe("safeNextPath (post-login redirect guard)", () => {
   it("keeps same-origin paths with query and hash", () => {
     expect(safeNextPath("/app/trips/1?x=1")).toBe("/app/trips/1?x=1");
     expect(safeNextPath("/app#top")).toBe("/app#top");
+    // Dot segments inside the origin are fine once normalised.
+    expect(safeNextPath("/app/../driver")).toBe("/driver");
   });
   it("falls back for anything that could leave the origin", () => {
-    for (const bad of ["/\\evil.com", "//evil.com", "http://evil.com", "javascript:alert(1)", "", null, undefined, "app", "/ app"]) {
+    for (const bad of [
+      "/\\evil.com",
+      "//evil.com",
+      "http://evil.com",
+      "javascript:alert(1)",
+      "",
+      null,
+      undefined,
+      "app",
+      "/ app",
+      // Dot-segment normalisation must not turn a same-origin path into "//evil.com".
+      "/..//evil.com",
+      "/.//evil.com",
+      "/a/..//evil.com",
+      "/app/../..//evil.com?x=1",
+    ]) {
       expect(safeNextPath(bad)).toBe("/app");
     }
     expect(safeNextPath("//evil.com", "/driver")).toBe("/driver");
+    expect(safeNextPath("/..//evil.com", "/driver")).toBe("/driver");
   });
 });

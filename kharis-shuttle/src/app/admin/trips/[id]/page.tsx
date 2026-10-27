@@ -7,10 +7,12 @@ import { getSettings } from "@/lib/data/settings";
 import { formatTime } from "@/lib/time";
 import { directionShort } from "@/lib/trips";
 import { uuid } from "@/lib/validation/common";
+import { requirePageAuth } from "@/lib/auth/page";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminTripPage({ params }: { params: Promise<{ id: string }> }) {
+  await requirePageAuth({ role: "admin" });
   const { id } = await params;
   if (!uuid.safeParse(id).success) notFound();
   const [settings, data, drivers] = await Promise.all([getSettings(), getTripAdmin(id), listDrivers()]);

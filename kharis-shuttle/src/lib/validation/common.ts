@@ -32,6 +32,11 @@ export const optionalText = (max: number) =>
  * Validate a post-login `next` path: must be a same-origin absolute path.
  * Rejects protocol-relative (`//`), backslash tricks (`/\evil.com`), and anything
  * the URL parser would resolve to another origin.
+ *
+ * The URL parser also collapses dot segments, so a raw value that passes the
+ * checks above can still normalise to a protocol-relative URL ("/..//evil.com",
+ * "/a/..//evil.com" → "//evil.com"). The NORMALISED output is therefore checked
+ * again before it is returned.
  */
 export function safeNextPath(raw: string | null | undefined, fallback = "/app"): string {
   if (!raw) return fallback;
@@ -40,7 +45,9 @@ export function safeNextPath(raw: string | null | undefined, fallback = "/app"):
   try {
     const u = new URL(value, "http://local.test");
     if (u.origin !== "http://local.test") return fallback;
-    return `${u.pathname}${u.search}${u.hash}` || fallback;
+    const out = `${u.pathname}${u.search}${u.hash}`;
+    if (!/^\/(?![\/\\])/.test(out) || /[\\\s]/.test(out)) return fallback;
+    return out;
   } catch {
     return fallback;
   }

@@ -4,9 +4,9 @@ import {
   clearLoginFailures,
   loadProfile,
   publicProfile,
-  recordLoginFailure,
   signInWithPin,
   signOutCurrent,
+  throwLoginFailure,
 } from "@/lib/auth/session";
 import { HOME_BY_ROLE } from "@/lib/constants";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -15,7 +15,12 @@ import { loginSchema } from "@/lib/validation/auth";
 
 export const dynamic = "force-dynamic";
 
-/** POST /api/auth/login — username + PIN → cookie session. */
+/**
+ * POST /api/auth/login — username + PIN → cookie session.
+ * A wrong PIN (WrongPinError) is counted atomically in the database; when this
+ * attempt trips the lockout the response is the same 423 LOCKED as the pre-check.
+ * A Supabase outage or rate limit surfaces as 503 and is not counted.
+ */
 export const POST = withHandler(async (request) => {
   const input = await parseBody(request, loginSchema);
   const admin = createAdminClient();
@@ -25,10 +30,7 @@ export const POST = withHandler(async (request) => {
   try {
     await signInWithPin(input.username, input.pin);
   } catch (err) {
-    if (err instanceof ApiError && err.code === "INVALID_CREDENTIALS") {
-      await recordLoginFailure(admin, input.username);
-    }
-    throw err;
+    await throwLoginFailure(admin, input.username, err);
   }
 
   await clearLoginFailures(admin, input.username);

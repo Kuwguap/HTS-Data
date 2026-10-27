@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { TabBar } from "@/components/layout/TabBar";
+import { PushResync } from "@/components/pwa/PushResync";
 import { ReminderBanner } from "@/components/pwa/ReminderBanner";
 import { requirePageAuth } from "@/lib/auth/page";
 import { unreadCount } from "@/lib/data/student";
@@ -13,6 +14,7 @@ export default async function StudentLayout({ children }: { children: ReactNode 
 
   return (
     <>
+      <PushResync />
       <div className="k-shell" style={{ paddingTop: 8 }}>
         <ReminderBanner />
       </div>

@@ -1,4 +1,4 @@
-import { fromPostgresError, ok, parseBody, withHandler } from "@/lib/api";
+import { ApiError, fromPostgresError, ok, parseBody, withHandler } from "@/lib/api";
 import { requireRole } from "@/lib/auth/require";
 import { listTrips } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
@@ -35,9 +35,21 @@ function reminderDedupePrefix(trip: { id: string; departure_at: string }): strin
   return `reminder:${trip.id}:${Math.round(Date.parse(trip.departure_at) / 1000)}`;
 }
 
+function fieldError(field: string, message: string): ApiError {
+  return new ApiError(400, "VALIDATION", "Please check the form.", { fieldErrors: { [field]: [message] } });
+}
+
+/** Same tolerance as the PATCH route: a departure more than a minute ago is a mistake. */
+const PAST_TOLERANCE_MS = 60_000;
+
 export const POST = withHandler(async (request) => {
   const { user } = await requireRole("admin");
   const input = await parseBody(request, adhocTripSchema);
+  // create_adhoc_trip would happily create a trip that is already "boarding" (or past
+  // its cutoff) and show it on every student's Today list.
+  if (new Date(input.departure_at).getTime() < Date.now() - PAST_TOLERANCE_MS) {
+    throw fieldError("departure_at", "That time is in the past");
+  }
   const admin = createAdminClient();
   const settings = await getSettings();
 

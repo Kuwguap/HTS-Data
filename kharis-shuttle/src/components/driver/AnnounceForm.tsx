@@ -151,7 +151,7 @@ export function AnnounceForm({ settings, template }: AnnounceFormProps) {
             {vars.message ? <span style={{ display: "block", marginTop: 4 }}>{vars.message}</span> : null}
           </div>
           <p style={{ margin: "0 4px", color: "var(--hint)", fontSize: "var(--fs-sm)" }}>
-            Goes to every student with reminders on. Tapping it opens the live map.
+            Goes to every student. Tapping it opens the live map.
           </p>
         </div>
       </div>

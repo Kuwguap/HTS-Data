@@ -164,7 +164,8 @@ export function UsersList({ users: initialUsers, meId, initialFilter = "all", in
                   )
                 }
               />
-              <Row label="Reminders" value={selected.reminders_enabled ? "On" : "Off"} />
+              {/* Staff alerts are duty alerts: delivery never reads reminders_enabled for drivers/admins. */}
+              <Row label="Reminders" value={selected.role === "student" ? (selected.reminders_enabled ? "On" : "Off") : "Always on"} />
               <Row label="Joined" value={new Date(selected.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} />
             </List>
 

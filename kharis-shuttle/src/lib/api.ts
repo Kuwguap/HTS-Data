@@ -63,7 +63,10 @@ export function fromPostgresError(err: unknown): ApiError {
     }
   }
   if (e?.code === "23505") return new ApiError(409, "CONFLICT", "That already exists.");
-  return new ApiError(500, "INTERNAL", message);
+  // Unknown driver/Postgres error: keep the raw text in the server log only; the client
+  // gets the generic message with no details.
+  console.error("[api] database error", e?.code ?? "", message);
+  return new ApiError(500, "INTERNAL", "Something went wrong. Try again.");
 }
 
 /** Parse a JSON body with a zod schema; throws ApiError(400, VALIDATION). */

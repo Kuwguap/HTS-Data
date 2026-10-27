@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { Button, Field, List, Row, Sheet, Switch, useToast } from "@/components/ui";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
 import type { Profile } from "@/lib/db.types";
+import { STAFF_ALERTS_TITLE, staffAlertsSubtitle } from "@/components/auth/staffAlerts";
 
 type Props = { profile: Pick<Profile, "id" | "username" | "full_name" | "phone" | "room" | "role" | "reminders_enabled"> };
 
@@ -88,7 +89,12 @@ export function AccountFallback({ profile }: Props) {
       </List>
 
       <List caption="Notifications">
-        <Row title="Shuttle reminders" subtitle="Daily announcement and trip reminders" trailing={<Switch checked={reminders} onChange={toggleReminders} label="Shuttle reminders" />} />
+        {profile.role === "student" ? (
+          <Row title="Shuttle reminders" subtitle="Daily announcement and trip reminders" trailing={<Switch checked={reminders} onChange={toggleReminders} label="Shuttle reminders" />} />
+        ) : (
+          // Duty alerts: delivery ignores reminders_enabled for drivers and admins, so there is nothing to toggle.
+          <Row title={STAFF_ALERTS_TITLE} subtitle={staffAlertsSubtitle(profile.role)} />
+        )}
       </List>
 
       <List caption="Security">

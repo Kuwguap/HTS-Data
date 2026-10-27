@@ -56,7 +56,8 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
       const dark = document.documentElement.dataset.theme === "dark";
       const start: [number, number] = lat != null && lng != null ? [lat, lng] : DEFAULT_CENTER;
       const map = L.map(containerRef.current, { center: start, zoom: 15, zoomControl: true, attributionControl: true });
-      L.tileLayer(dark ? TILE.dark : TILE.light, { attribution: ATTRIBUTION, subdomains: "abcd", maxZoom: 19 }).addTo(map);
+      // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
+      L.tileLayer(dark ? TILE.dark : TILE.light, { attribution: ATTRIBUTION, subdomains: "abcd", maxZoom: 19, crossOrigin: true }).addTo(map);
       if (lat != null && lng != null) markerRef.current = L.marker(start, { icon: pinIcon(L) }).addTo(map);
       map.on("click", (e: Leaflet.LeafletMouseEvent) => {
         const next: [number, number] = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];

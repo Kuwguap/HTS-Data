@@ -21,11 +21,21 @@ describe("fromPostgresError", () => {
     expect(e.status).toBe(409);
     expect(e.code).toBe("CONFLICT");
   });
-  it("falls back to INTERNAL", () => {
-    const e = fromPostgresError({ message: "connection refused" });
-    expect(e.status).toBe(500);
-    expect(e.code).toBe("INTERNAL");
-    expect(fromPostgresError(null).message).toBe("Database error");
+  it("falls back to a generic INTERNAL error that never echoes the driver text", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const e = fromPostgresError({ message: "connection refused to host db.internal", code: "08001" });
+      expect(e.status).toBe(500);
+      expect(e.code).toBe("INTERNAL");
+      expect(e.message).toBe("Something went wrong. Try again.");
+      expect(e.message).not.toContain("db.internal");
+      expect(e.details).toBeUndefined();
+      // The raw text goes to the server log instead.
+      expect(log).toHaveBeenCalledWith("[api] database error", "08001", "connection refused to host db.internal");
+      expect(fromPostgresError(null).message).toBe("Something went wrong. Try again.");
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
