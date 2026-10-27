@@ -232,13 +232,21 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     const group = pinsRef.current;
     if (!group) return;
     group.clearLayers();
+    // Stops within ~120 m of each other would stack their chips: hand out top / bottom / right / left in turn.
+    const placed: Array<{ p: LatLng; dir: L.Direction }> = [];
+    const pickDirection = (p: LatLng): L.Direction => {
+      const taken = new Set(placed.filter((q) => haversineM(q.p, p) < 120).map((q) => q.dir));
+      const dir = (["top", "bottom", "right", "left"] as L.Direction[]).find((d) => !taken.has(d)) ?? "top";
+      placed.push({ p, dir });
+      return dir;
+    };
     for (const p of pickupLocations) {
       const mine = p.id === myPickupLocationId;
       const m = L.marker([p.lat, p.lng], { icon: pinIcon(mine), interactive: true, keyboard: false, zIndexOffset: mine ? 500 : 0 });
       // Every stop shows its name, like the place names on the basemap; the viewer's own stop is highlighted.
       m.bindTooltip(mine ? `You · ${p.name}` : p.name, {
         permanent: true,
-        direction: "top",
+        direction: pickDirection(p),
         className: mine ? "k-map-tip k-map-tip--mine" : "k-map-tip",
         opacity: 1,
         interactive: false,
