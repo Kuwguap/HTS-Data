@@ -17,7 +17,7 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { INVALID_CREDENTIALS_MESSAGE, WrongPinError, lockoutError, mapSignInError, throwLoginFailure } from "@/lib/auth/session";
+import { INVALID_CREDENTIALS_MESSAGE, WrongPinError, lockoutError, mapSignInError, reserveLoginAttempt } from "@/lib/auth/session";
 
 describe("mapSignInError", () => {
   it("counts only a rejected username + PIN as a wrong PIN", () => {
@@ -31,7 +31,6 @@ describe("mapSignInError", () => {
       expect(mapped.status).toBe(401);
       expect(mapped.code).toBe("INVALID_CREDENTIALS");
       expect(mapped.message).toBe(INVALID_CREDENTIALS_MESSAGE);
-      expect((mapped as WrongPinError).countsAsFailure).toBe(true);
     }
   });
   it("maps the Supabase sign-in rate limit to 503 RATE_LIMITED", () => {
@@ -96,37 +95,39 @@ describe("lockoutError", () => {
   });
 });
 
-describe("throwLoginFailure", () => {
+describe("reserveLoginAttempt (count before verifying)", () => {
   const rpc = vi.fn();
-  const admin = { rpc } as unknown as Parameters<typeof throwLoginFailure>[0];
+  const admin = { rpc } as unknown as Parameters<typeof reserveLoginAttempt>[0];
   beforeEach(() => rpc.mockReset());
 
-  it("records a WrongPinError through record_login_failure and rethrows it while unlocked", async () => {
-    rpc.mockResolvedValue({ data: { username: "abena", failed_count: 2, locked_until: null, updated_at: "x" }, error: null });
-    const err = new WrongPinError();
-    await expect(throwLoginFailure(admin, " Abena ", err)).rejects.toBe(err);
-    expect(rpc).toHaveBeenCalledWith("record_login_failure", { p_username: "abena", p_max_failures: 5, p_lockout_minutes: 15 });
+  it("counts the attempt atomically with one extra slot so 5 guesses are verified and the 6th is refused", async () => {
+    const row = { username: "abena", failed_count: 2, locked_until: null, updated_at: "x" };
+    rpc.mockResolvedValue({ data: row, error: null });
+    await expect(reserveLoginAttempt(admin, " Abena ")).resolves.toEqual(row);
+    expect(rpc).toHaveBeenCalledWith("record_login_failure", { p_username: "abena", p_max_failures: 6, p_lockout_minutes: 15 });
   });
-  it("throws 423 LOCKED when this attempt tripped the lockout", async () => {
+  it("throws 423 LOCKED when the window is spent (this attempt tripped the lock or it was already locked)", async () => {
     rpc.mockResolvedValue({
       data: { username: "abena", failed_count: 0, locked_until: new Date(Date.now() + 15 * 60_000).toISOString(), updated_at: "x" },
       error: null,
     });
-    await expect(throwLoginFailure(admin, "abena", new WrongPinError())).rejects.toMatchObject({ status: 423, code: "LOCKED" });
+    await expect(reserveLoginAttempt(admin, "abena")).rejects.toMatchObject({ status: 423, code: "LOCKED" });
   });
-  it("does not count 503s or uncounted 401s", async () => {
-    for (const err of [new ApiError(503, "RATE_LIMITED", "busy"), new ApiError(401, "INVALID_CREDENTIALS", "nope")]) {
-      await expect(throwLoginFailure(admin, "abena", err)).rejects.toBe(err);
-    }
-    expect(rpc).not.toHaveBeenCalled();
+  it("lets an expired lock through (the SQL side restarts the count)", async () => {
+    rpc.mockResolvedValue({
+      data: { username: "abena", failed_count: 1, locked_until: new Date(Date.now() - 1000).toISOString(), updated_at: "x" },
+      error: null,
+    });
+    await expect(reserveLoginAttempt(admin, "abena")).resolves.toMatchObject({ failed_count: 1 });
   });
-  it("still reports the wrong PIN when the counter call fails (logged)", async () => {
+  it("fails closed with 503 when the counter cannot be written (logged)", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       rpc.mockResolvedValue({ data: null, error: { message: "boom" } });
-      const err = new WrongPinError();
-      await expect(throwLoginFailure(admin, "abena", err)).rejects.toBe(err);
-      expect(log).toHaveBeenCalled();
+      await expect(reserveLoginAttempt(admin, "abena")).rejects.toMatchObject({ status: 503, code: "INTERNAL" });
+      rpc.mockResolvedValue({ data: null, error: null });
+      await expect(reserveLoginAttempt(admin, "abena")).rejects.toMatchObject({ status: 503 });
+      expect(log).toHaveBeenCalledTimes(2);
     } finally {
       log.mockRestore();
     }

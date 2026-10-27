@@ -29,6 +29,12 @@ export const PATCH = withHandler(async (request) => {
   if (input.reminders_enabled !== undefined && profile.role === "student") patch.reminders_enabled = input.reminders_enabled;
   if (input.onboarded) patch.onboarded_at = new Date().toISOString();
 
+  // Nothing left to write (e.g. staff sending only reminders_enabled): answer with
+  // the current profile instead of issuing an empty UPDATE.
+  if (Object.keys(patch).length === 0) {
+    return ok({ profile: publicProfile(profile), home: HOME_BY_ROLE[profile.role] });
+  }
+
   const admin = createAdminClient();
   const { data, error } = await admin.from("profiles").update(patch).eq("id", user.id).select("*").single();
   if (error || !data) throw new ApiError(500, "INTERNAL", "Could not save your details. Try again.");

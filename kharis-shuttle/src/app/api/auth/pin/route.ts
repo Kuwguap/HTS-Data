@@ -1,14 +1,6 @@
 import { ApiError, ok, parseBody, withHandler } from "@/lib/api";
 import { requireUser } from "@/lib/auth/require";
-import {
-  WrongPinError,
-  assertNotLockedOut,
-  clearLoginFailures,
-  setPin,
-  signInWithPin,
-  throwLoginFailure,
-  verifyPin,
-} from "@/lib/auth/session";
+import { clearLoginFailures, reserveLoginAttempt, setPin, signInWithPin, verifyPin } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { changePinSchema } from "@/lib/validation/auth";
 
@@ -19,8 +11,8 @@ const WRONG_CURRENT_PIN = "Your current PIN is not right.";
 /**
  * POST /api/auth/pin — change my own PIN (needs the current one).
  *
- * Lockout: a wrong current PIN counts toward the same 5-per-15-min lockout as
- * sign-in (assertNotLockedOut → verifyPin → throwLoginFailure), so a signed-in
+ * Lockout: checking the current PIN draws on the same 5-per-15-min budget as
+ * sign-in (reserveLoginAttempt → verifyPin → clearLoginFailures), so a signed-in
  * device cannot brute-force the PIN here instead of at /login.
  *
  * Session: setPin() uses auth.admin.updateUserById({ password }) and GoTrue deletes
@@ -38,15 +30,14 @@ export const POST = withHandler(async (request) => {
   }
 
   const admin = createAdminClient();
-  await assertNotLockedOut(admin, profile.username);
+  await reserveLoginAttempt(admin, profile.username);
 
   try {
     await verifyPin(profile.username, input.current_pin);
   } catch (err) {
+    // Same uniform wording for every 401; 503s (Auth busy/down) pass through.
     if (err instanceof ApiError && err.code === "INVALID_CREDENTIALS") {
-      // Same lockout rule as /login; only a genuinely wrong PIN (WrongPinError) counts.
-      const shown = err instanceof WrongPinError ? new WrongPinError(WRONG_CURRENT_PIN) : new ApiError(401, "INVALID_CREDENTIALS", WRONG_CURRENT_PIN);
-      await throwLoginFailure(admin, profile.username, shown);
+      throw new ApiError(401, "INVALID_CREDENTIALS", WRONG_CURRENT_PIN);
     }
     throw err;
   }

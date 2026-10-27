@@ -21,12 +21,11 @@ export const INVALID_CREDENTIALS_MESSAGE = "Wrong username or PIN.";
 const SIGN_IN_UNREACHABLE_MESSAGE = "Can't reach the sign-in service. Try again.";
 
 /**
- * The one sign-in failure that counts toward the lockout: Supabase Auth checked the
- * username + PIN and rejected them. Every other 401 (an auth code we do not know,
- * e.g. a banned user) is reported the same way but is NOT the caller guessing.
+ * Supabase Auth checked the username + PIN and rejected them. Every other 401 (an
+ * auth code we do not know, e.g. a banned user) is reported with the same message
+ * so nothing about the account leaks.
  */
 export class WrongPinError extends ApiError {
-  readonly countsAsFailure = true as const;
   constructor(message = INVALID_CREDENTIALS_MESSAGE) {
     super(401, "INVALID_CREDENTIALS", message);
   }
@@ -118,48 +117,29 @@ export function lockoutError(lockedUntil: string | null | undefined): ApiError |
   );
 }
 
-/** Cheap pre-check before hitting Supabase Auth: throws ApiError(423) when the username is locked out. */
-export async function assertNotLockedOut(admin: Admin, username: string): Promise<void> {
-  const { data } = await admin
-    .from("login_attempts")
-    .select("locked_until")
-    .eq("username", normalizeUsername(username))
-    .maybeSingle();
-  const locked = lockoutError(data?.locked_until);
-  if (locked) throw locked;
-}
-
 /**
- * Count one wrong PIN atomically (migration 0010: a single INSERT ... ON CONFLICT
- * DO UPDATE, so parallel requests cannot out-race the lockout) and return the row.
- * Returns null if the database call failed (logged); the caller still reports the
- * original 401.
+ * Reserve one PIN check BEFORE asking Supabase Auth. One atomic call to
+ * record_login_failure (migration 0010: a single INSERT ... ON CONFLICT DO UPDATE),
+ * so a parallel burst cannot out-race the lockout: the window allows exactly
+ * LOGIN_MAX_FAILURES verified guesses, the next attempt trips the lock and is refused
+ * here without reaching GoTrue, and so is every attempt while the lock holds.
+ * A successful check clears the row (clearLoginFailures), so correct PINs cost nothing.
+ * Fails closed: if the counter cannot be written the check is refused with 503
+ * rather than running unthrottled.
  */
-export async function recordLoginFailure(admin: Admin, username: string): Promise<LoginAttempt | null> {
+export async function reserveLoginAttempt(admin: Admin, username: string): Promise<LoginAttempt> {
   const { data, error } = await admin.rpc("record_login_failure", {
     p_username: normalizeUsername(username),
-    p_max_failures: LOGIN_MAX_FAILURES,
+    p_max_failures: LOGIN_MAX_FAILURES + 1,
     p_lockout_minutes: LOGIN_LOCKOUT_MINUTES,
   });
-  if (error) {
-    console.error("[auth] record_login_failure failed:", error.message);
-    return null;
+  if (error || !data) {
+    console.error("[auth] record_login_failure failed:", error?.message ?? "no row returned");
+    throw new ApiError(503, "INTERNAL", SIGN_IN_UNREACHABLE_MESSAGE);
   }
-  return data ?? null;
-}
-
-/**
- * Handle a failed PIN check: when `err` is a WrongPinError, record the failure and
- * throw the 423 LOCKED error if this attempt tripped the lockout. Any other error
- * (503 outage, unknown auth code) is rethrown untouched and NOT counted.
- */
-export async function throwLoginFailure(admin: Admin, username: string, err: unknown): Promise<never> {
-  if (err instanceof WrongPinError) {
-    const attempt = await recordLoginFailure(admin, username);
-    const locked = lockoutError(attempt?.locked_until);
-    if (locked) throw locked;
-  }
-  throw err;
+  const locked = lockoutError(data.locked_until);
+  if (locked) throw locked;
+  return data;
 }
 
 export async function clearLoginFailures(admin: Admin, username: string): Promise<void> {

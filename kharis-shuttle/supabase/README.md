@@ -16,6 +16,8 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0007_realtime.sql` | `trip_locations` → `trips.last_*` (throttled to one update per 15 s) + `realtime.send` broadcast on `trip:<id>`, publication membership, `replica identity full`, `realtime.messages` policy |
 | `0008_seed.sql` | settings row, message templates, default pickup points, default timetable (all `on conflict do nothing`) |
 | `0009_cron.sql` | `cron_tick()` + pg_cron jobs — no-op unless `pg_cron` **and** `pg_net` are installed |
+| `0010_login_lockout.sql` | `record_login_failure(username, max_failures, lockout_minutes)` — one atomic upsert per sign-in attempt (the login/change-PIN routes reserve the attempt before asking Supabase Auth) |
+| `0011_reseat_guard.sql` | `set_booking_status` re-created: re-seating a no-show/cancelled rider on a full trip raises `CONFLICT` instead of overbooking |
 
 All migrations are idempotent: re-applying any of them on an already-migrated database
 is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conflict do nothing`).

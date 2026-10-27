@@ -1,12 +1,11 @@
 import { ApiError, ok, parseBody, withHandler } from "@/lib/api";
 import {
-  assertNotLockedOut,
   clearLoginFailures,
   loadProfile,
   publicProfile,
+  reserveLoginAttempt,
   signInWithPin,
   signOutCurrent,
-  throwLoginFailure,
 } from "@/lib/auth/session";
 import { HOME_BY_ROLE } from "@/lib/constants";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -17,22 +16,17 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/auth/login — username + PIN → cookie session.
- * A wrong PIN (WrongPinError) is counted atomically in the database; when this
- * attempt trips the lockout the response is the same 423 LOCKED as the pre-check.
- * A Supabase outage or rate limit surfaces as 503 and is not counted.
+ * Every attempt is counted atomically BEFORE Supabase Auth is asked, so a burst of
+ * parallel guesses gets at most LOGIN_MAX_FAILURES real checks per lockout window;
+ * once the window is spent the response is 423 LOCKED without touching Auth.
+ * A correct PIN clears the counter. A Supabase outage or rate limit surfaces as 503.
  */
 export const POST = withHandler(async (request) => {
   const input = await parseBody(request, loginSchema);
   const admin = createAdminClient();
 
-  await assertNotLockedOut(admin, input.username);
-
-  try {
-    await signInWithPin(input.username, input.pin);
-  } catch (err) {
-    await throwLoginFailure(admin, input.username, err);
-  }
-
+  await reserveLoginAttempt(admin, input.username);
+  await signInWithPin(input.username, input.pin);
   await clearLoginFailures(admin, input.username);
 
   const supabase = await createClient();

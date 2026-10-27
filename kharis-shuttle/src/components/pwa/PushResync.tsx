@@ -3,20 +3,17 @@
 import { useEffect } from "react";
 import { resyncDeviceSubscription } from "@/lib/push/client";
 
-/** Set once the resync has run in this page load (survives StrictMode double-mount and layout changes). */
-let ran = false;
-
 /**
- * Re-attaches this device's existing push subscription to the signed-in user, at
- * most once per page load. Mounted in every role shell so that after a logout +
- * login on a shared phone the next person re-claims the device silently (the row
- * is upserted on endpoint by POST /api/push/subscribe). Never prompts: it only
- * acts when Notification.permission is already "granted". Renders nothing.
+ * Re-attaches this device's existing push subscription to the signed-in user.
+ * Mounted in every role shell, so it runs whenever a shell mounts: on a hard load
+ * and again after a logout + login on a shared phone (the login navigation mounts
+ * the next person's shell), so the next person re-claims the device silently. The
+ * POST is an idempotent upsert on the endpoint, so running twice (StrictMode, two
+ * shells in one session) is harmless. Never prompts: it only acts when
+ * Notification.permission is already "granted". Renders nothing.
  */
 export function PushResync() {
   useEffect(() => {
-    if (ran) return;
-    ran = true;
     void resyncDeviceSubscription();
   }, []);
   return null;
