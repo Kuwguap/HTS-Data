@@ -36,3 +36,5 @@ assets/icon-sources/*.png
 
 # vercel cli link
 .vercel/
+.vercel
+.env*

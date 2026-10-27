@@ -1,0 +1,14 @@
+# Never upload local secrets, scratch or test artefacts to Vercel (the CLI deploys from this folder).
+.env
+.env.*
+.deploy
+.ui-shots
+.workflows
+.local-pg
+node_modules
+.next
+playwright-report
+test-results
+tests
+assets/icon-sources
+*.log
