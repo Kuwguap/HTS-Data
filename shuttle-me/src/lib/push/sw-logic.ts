@@ -175,8 +175,8 @@ export type RequestClass = "static" | "tile" | "navigate" | "passthrough";
 /**
  * Which caching strategy a request gets:
  * - `static`: cache-first (hashed Next assets, app icons)
- * - `tile`: cache-first with a bounded cache (Esri basemap tiles from
- *   server.arcgisonline.com; basemaps.cartocdn.com is still recognised)
+ * - `tile`: cache-first with a bounded cache (basemap tiles from
+ *   basemaps.cartocdn.com — keyed CARTO — or the Esri fallback on server.arcgisonline.com)
  * - `navigate`: network-only with the /offline fallback
  * - `passthrough`: untouched (API, RSC, everything else)
  */

@@ -57,7 +57,8 @@ export function TemplatesEditor({ templates, hostelName, campusName }: Props) {
   const insert = (key: string) => setBody((b) => `${b}${b && !b.endsWith(" ") ? " " : ""}{${key}}`);
 
   const groups: Array<{ caption: string; keys: TemplateRow["key"][] }> = [
-    { caption: "Students · daily", keys: ["daily_announcement", "trip_reminder", "trip_nudge", "trip_departed"] },
+    { caption: "Students · daily", keys: ["daily_announcement", "trip_reminder", "trip_nudge"] },
+    { caption: "Students · live trip", keys: ["trip_boarding", "trip_departed", "trip_approaching", "trip_arrived"] },
     { caption: "Students · bookings", keys: ["booking_confirmed", "booking_waitlisted", "booking_promoted", "booking_cancelled", "trip_cancelled", "trip_updated"] },
     { caption: "Pickup requests", keys: ["pickup_request_new", "pickup_request_accepted", "pickup_request_declined", "pickup_request_expired", "pickup_request_cancelled"] },
     { caption: "Drivers & admin", keys: ["driver_manifest", "driver_booking_update", "return_announcement", "broadcast", "test"] },

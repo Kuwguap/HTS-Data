@@ -1,8 +1,12 @@
+import { after } from "next/server";
 import { ApiError, withHandler } from "@/lib/api";
 import { requireRole } from "@/lib/auth/require";
 import { requireTripAccess } from "@/lib/data/driver";
-import type { TablesInsert } from "@/lib/db.types";
+import { getSettings } from "@/lib/data/settings";
+import type { TablesInsert, Trip } from "@/lib/db.types";
+import { notifyApproaching } from "@/lib/notify/approaching";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { formatTime } from "@/lib/time";
 import { locationBatchSchema } from "@/lib/validation/driver";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +18,8 @@ const MAX_POINTS = 50;
  * Body may be JSON or text/plain (navigator.sendBeacon). Trip must be boarding or
  * departed and ours (or unassigned → claimed, or caller is admin). Inserts
  * trip_locations rows; the DB trigger updates trips.last_* and broadcasts. 204.
+ * After the response, riders whose pickup is within 400 m of the newest point get
+ * trip_approaching (once per booking; see src/lib/notify/approaching.ts).
  */
 export const POST = withHandler(async (request) => {
   const { user, profile } = await requireRole("driver");
@@ -68,7 +74,33 @@ export const POST = withHandler(async (request) => {
       console.error("[driver/location] insert failed:", error.message);
       throw new ApiError(500, "INTERNAL", "Could not save the location.");
     }
+    const newest = rows[rows.length - 1]!;
+    await runAfterResponse(() => approachingAfterInsert(admin, trip, { lat: newest.lat, lng: newest.lng }));
   }
 
   return new Response(null, { status: 204 });
 });
+
+/** The approaching check never delays or breaks the 204: it runs after the response and swallows its own errors. */
+async function approachingAfterInsert(admin: ReturnType<typeof createAdminClient>, trip: Trip, bus: { lat: number; lng: number }): Promise<void> {
+  try {
+    const settings = await getSettings();
+    await notifyApproaching(admin, trip, bus, {
+      time: formatTime(trip.departure_at, settings.timezone),
+      origin: trip.origin_label,
+      destination: trip.destination_label,
+      hostel: settings.hostel_name,
+    });
+  } catch (err) {
+    console.error("[driver/location] approaching check failed:", err instanceof Error ? err.message : err);
+  }
+}
+
+/** `after()` inside a request (returns at once); inline and awaited outside one (scripts, tests). */
+function runAfterResponse(task: () => Promise<void>): Promise<void> | void {
+  try {
+    after(task);
+  } catch {
+    return task();
+  }
+}

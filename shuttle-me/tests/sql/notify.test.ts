@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Client } from "pg";
-import { IDS, errorOf, one, resetDb, rows, scalar } from "./helpers";
+import { IDS, ROOT, errorOf, one, resetDb, rows, scalar } from "./helpers";
 
 let c: Client;
 
@@ -270,7 +272,7 @@ describe("function privileges", () => {
 });
 
 describe("pickup_request_cancelled (migrations 0012 + 0013)", () => {
-  it("every notification_kind value has a message template (20 kinds)", async () => {
+  it("every notification_kind value has a message template (23 kinds)", async () => {
     const missing = await rows<{ kind: string }>(
       c,
       `select e::text as kind
@@ -279,8 +281,8 @@ describe("pickup_request_cancelled (migrations 0012 + 0013)", () => {
         where t.key is null`,
     );
     expect(missing).toEqual([]);
-    expect(await scalar<string>(c, "select count(*) from unnest(enum_range(null::public.notification_kind))")).toBe("20");
-    expect(await scalar<string>(c, "select count(*) from message_templates")).toBe("20");
+    expect(await scalar<string>(c, "select count(*) from unnest(enum_range(null::public.notification_kind))")).toBe("23");
+    expect(await scalar<string>(c, "select count(*) from message_templates")).toBe("23");
   });
 
   it("renders the template with {name} and {pickup}", async () => {
@@ -320,5 +322,89 @@ describe("pickup_request_cancelled (migrations 0012 + 0013)", () => {
     expect(await enqueue()).toBe(0); // a retry of the same withdrawal never pushes twice
     const claimed = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
     expect(claimed.map((x) => x.kind)).toEqual(["pickup_request_cancelled"]);
+  });
+});
+
+describe("trip progress kinds (migrations 0014 + 0015)", () => {
+  it("renders trip_boarding, trip_approaching and trip_arrived with the route placeholders", async () => {
+    const boarding = await one<{ title: string; body: string }>(
+      c,
+      `select * from render_template('trip_boarding', '{"time": "7:30 AM", "origin": "Kharis Courts Hostel", "destination": "KNUST", "pickup": "Hostel main gate"}'::jsonb)`,
+    );
+    expect(boarding.title).toBe("🚌 Boarding now");
+    expect(boarding.body).toBe("The 7:30 AM shuttle is boarding at Kharis Courts Hostel. Be at Hostel main gate — leaves at 7:30 AM.");
+
+    const approaching = await one<{ title: string; body: string }>(c, `select * from render_template('trip_approaching', '{"count": 2, "pickup": "KSB"}'::jsonb)`);
+    expect(approaching.title).toBe("🚌 Shuttle is close");
+    expect(approaching.body).toBe("The shuttle is about 2 min from KSB. Head there now.");
+
+    const arrived = await one<{ title: string; body: string }>(c, `select * from render_template('trip_arrived', '{"time": "7:30 AM", "destination": "KNUST"}'::jsonb)`);
+    expect(arrived.title).toBe("🏁 Arrived");
+    expect(arrived.body).toBe("The 7:30 AM shuttle has arrived at KNUST.");
+  });
+
+  it("rewrote the trip_departed default body, but leaves an admin's own wording alone", async () => {
+    const r = await one<{ title: string; body: string }>(
+      c,
+      `select * from render_template('trip_departed', '{"time": "7:30 AM", "origin": "Kharis Courts Hostel", "destination": "KNUST"}'::jsonb)`,
+    );
+    expect(r.title).toBe("🚌 Shuttle has left");
+    expect(r.body).toBe("The 7:30 AM shuttle to KNUST has left Kharis Courts Hostel — tap to follow it live.");
+
+    // An edited body is untouched by re-applying 0015 (idempotent migrations); the old default is upgraded.
+    await c.query("update message_templates set body = 'Custom: {time} to {destination}' where key = 'trip_departed'");
+    const migration = readFileSync(path.join(ROOT, "supabase/migrations/0015_trip_progress_templates.sql"), "utf8");
+    await c.query(migration);
+    expect(await scalar<string>(c, "select body from message_templates where key = 'trip_departed'")).toBe("Custom: {time} to {destination}");
+    await c.query("update message_templates set body = 'The {time} shuttle to {destination} has departed.' where key = 'trip_departed'");
+    await c.query(migration);
+    expect(await scalar<string>(c, "select body from message_templates where key = 'trip_departed'")).toBe(
+      "The {time} shuttle to {destination} has left {origin} — tap to follow it live.",
+    );
+    expect(await scalar<string>(c, "select count(*) from message_templates")).toBe("23");
+  });
+
+  it("enqueue_notification accepts the new kinds and dedupes on the routes' prefixes", async () => {
+    await c.query("delete from notifications");
+    const approach = () =>
+      scalar<number>(
+        c,
+        `select enqueue_notification(array[$1]::uuid[], 'trip_approaching', '{"count": 1, "pickup": "KSB", "trip_id": "trip-1"}'::jsonb,
+                 '/app/trips/trip-1/map', 'approach:trip-1:booking-1', 600, 'high', 'trip:trip-1')`,
+        [IDS.s1],
+      );
+    expect(await approach()).toBe(1);
+    expect(await approach()).toBe(0); // the next location batch inside the radius never pushes twice
+    expect(
+      await scalar<number>(
+        c,
+        `select enqueue_notification(array[$1, $2]::uuid[], 'trip_boarding', '{"time": "7:30 AM", "origin": "Kharis Courts Hostel", "pickup": "Hostel main gate"}'::jsonb,
+                 '/app/trips/trip-1', 'boarding:trip-1', 900, 'high', 'trip:trip-1')`,
+        [IDS.s1, IDS.s2],
+      ),
+    ).toBe(2);
+    expect(
+      await scalar<number>(
+        c,
+        `select enqueue_notification(array[$1]::uuid[], 'trip_arrived', '{"time": "7:30 AM", "destination": "KNUST"}'::jsonb,
+                 '/app/trips/trip-1', 'arrived:trip-1', 1800, 'high', 'trip:trip-1')`,
+        [IDS.s1],
+      ),
+    ).toBe(1);
+    const n = await one<{ kind: string; title: string; body: string; url: string; dedupe_key: string; urgency: string; collapse_tag: string }>(
+      c,
+      "select kind, title, body, url, dedupe_key, urgency, collapse_tag from notifications where kind = 'trip_approaching'",
+    );
+    expect(n).toEqual({
+      kind: "trip_approaching",
+      title: "🚌 Shuttle is close",
+      body: "The shuttle is about 1 min from KSB. Head there now.",
+      url: "/app/trips/trip-1/map",
+      dedupe_key: `approach:trip-1:booking-1:${IDS.s1}`,
+      urgency: "high",
+      collapse_tag: "trip:trip-1",
+    });
+    const kinds = await rows<{ kind: string }>(c, "select kind from notifications order by kind::text");
+    expect(kinds.map((k) => k.kind)).toEqual(["trip_approaching", "trip_arrived", "trip_boarding", "trip_boarding"]);
   });
 });

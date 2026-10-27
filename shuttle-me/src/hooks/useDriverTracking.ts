@@ -37,6 +37,20 @@ const HEARTBEAT_TICK_MS = 5_000;
 const HEARTBEAT_MAX_FIX_AGE_MS = 2 * TRACKING_DEFAULTS.heartbeatMs;
 /** Thrown by send() when the server refused the trip: the queue must not retry. */
 class RefusedError extends Error {}
+/** Every send-failure message starts with this (so GPS events do not clear it, and a success does). */
+const SEND_ERROR_PREFIX = "Couldn’t send";
+
+/** "HTTP 500 — Could not save the location." / "no connection" from a failed send. */
+async function describeFailure(res: Response): Promise<string> {
+  let detail = "";
+  try {
+    const body = (await res.json()) as { error?: { message?: string } };
+    detail = body?.error?.message ?? "";
+  } catch {
+    // not JSON
+  }
+  return `HTTP ${res.status}${detail ? ` — ${detail}` : ""}`;
+}
 
 type WakeLockSentinelLike = { release: () => Promise<void>; addEventListener: (t: "release", cb: () => void) => void };
 type NavigatorWithWakeLock = Navigator & { wakeLock?: { request: (type: "screen") => Promise<WakeLockSentinelLike> } };
@@ -60,7 +74,9 @@ function toOut(f: Fix): OutPoint {
  * `createFixQueue` (first fix + heartbeats go out at once, the rest when ≥ 5 are
  * waiting or 8 s after the oldest; retry with backoff; cap 50), `sendBeacon` on
  * pagehide, Screen Wake Lock (re-requested on visible), paused flag when the
- * page was hidden.
+ * page was hidden. A failed POST surfaces its HTTP status and server message in
+ * `error` (cleared by the next successful send); `sentCount` / `lastSentAt`
+ * count acknowledged fixes.
  */
 export function useDriverTracking(tripId: string): DriverTrackingState {
   const [status, setStatus] = useState<TrackingStatus>("idle");
@@ -80,13 +96,20 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
   const active = useRef(false);
   const queue = useRef<FixQueue<OutPoint> | null>(null);
   const queueTripId = useRef<string | null>(null);
+  /** Why the last send failed (HTTP status + server message, or "no connection"); null after a success. */
+  const lastSendError = useRef<string | null>(null);
 
   const onStats = useCallback((s: FixQueueStats) => {
     setQueued(s.queued);
     setSentCount(s.sent);
     setLastSentAt(s.lastSentAt);
-    if (s.failures > 2) setError("No connection — points are queued and will be sent when you’re back online.");
-    else if (s.failures === 0 && s.lastSentAt != null) setError((e) => (e && e.startsWith("No connection") ? null : e));
+    if (s.failures > 0 && lastSendError.current) {
+      const why = lastSendError.current;
+      setError(`${SEND_ERROR_PREFIX} the last fixes (${why}) — ${s.queued} queued, retrying…`);
+    } else if (s.failures === 0 && s.lastSentAt != null) {
+      lastSendError.current = null;
+      setError((e) => (e && e.startsWith(SEND_ERROR_PREFIX) ? null : e));
+    }
   }, []);
 
   const send = useCallback(
@@ -110,7 +133,7 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
         }
         throw new RefusedError(message, { cause: res.status });
       }
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(await describeFailure(res));
     },
     [tripId],
   );
@@ -134,6 +157,8 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
             }
             return;
           }
+          // fetch() rejects with a TypeError when offline; anything else carries the HTTP text.
+          lastSendError.current = err instanceof TypeError ? "no connection" : err instanceof Error ? err.message : String(err);
           throw err;
         }
       },
@@ -218,7 +243,7 @@ export function useDriverTracking(tripId: string): DriverTrackingState {
       };
       lastFix.current = fix;
       setAccuracy(fix.accuracy);
-      setError((e) => (e && e.startsWith("No connection") ? e : null));
+      setError((e) => (e && e.startsWith(SEND_ERROR_PREFIX) ? e : null));
       const decision = shouldSendFix(lastSent.current, fix);
       if (!decision.send) return;
       lastSent.current = fix;

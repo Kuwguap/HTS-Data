@@ -20,7 +20,7 @@ admin inside the app.
 | App | Next.js 16 (App Router, TypeScript), Tailwind 4, design tokens ported from the Krab mini app |
 | Backend | Supabase: Postgres (schema, RLS, SQL functions), Auth (username + PIN mapped to a synthetic email), Realtime (broadcast for GPS), `pg_cron` + `pg_net` as the minute ticker |
 | Push | Web Push (VAPID) via `web-push`, hand-written `public/sw.js` |
-| Map | Leaflet + Esri World Street Map raster tiles (no API key; dark mode is a CSS filter on the tile pane). `NEXT_PUBLIC_MAP_TILE_URL` / `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION` switch provider; a custom provider's tiles are network-only unless its host is added to `public/sw.js` |
+| Map | Leaflet + CARTO raster tiles (Voyager light / dark_all dark, keyed: `NEXT_PUBLIC_MAP_TILE_URL` + `NEXT_PUBLIC_MAP_TILE_URL_DARK`, the layer follows the colour scheme). Without env it falls back to Esri World Street Map (no key, dark mode = CSS filter on the tile pane). A custom provider's tiles are network-only unless its host is added to `public/sw.js` |
 | Tests | Vitest (unit + SQL against a throwaway local Postgres 16), Playwright smoke |
 
 See `docs/` (if present), `supabase/README.md` (database + cron) and `src/lib/push/README.md` (push
@@ -68,7 +68,8 @@ Useful scripts:
 | `PIN_PEPPER` | server only | random 32+ chars; derives the Supabase password from a user's PIN. Changing it invalidates every PIN. |
 | `CRON_SECRET` | server only | bearer token `pg_cron`/cron-job.org must send to `/api/cron/tick` |
 | `NEXT_PUBLIC_APP_URL` | client | public URL, used in the install guide and push links |
-| `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION` | client, optional | override the basemap (default Esri World Street Map, see `src/lib/map/tiles.ts`) |
+| `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_URL_DARK`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION`, `NEXT_PUBLIC_MAP_TILE_MAX_NATIVE_ZOOM` | client, optional | basemap templates (production: CARTO Voyager / dark_all with the hostel key, `{r}` = retina), attribution and the provider's deepest zoom (default 18 on cartocdn.com, else 19). Default Esri World Street Map; see `src/lib/map/tiles.ts` |
+| `NEXT_PUBLIC_BUILD_COMMIT` | set by `next.config.ts` | short `VERCEL_GIT_COMMIT_SHA` (or `dev`) baked into the bundle; `BuildRefresh` compares it with `/api/health` on every return to the foreground and reloads a stale installed app |
 
 ## Deploying
 

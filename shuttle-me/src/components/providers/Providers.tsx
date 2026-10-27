@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { BuildRefresh } from "@/components/pwa/BuildRefresh";
 import { ServiceWorkerRegistrar } from "@/components/pwa/ServiceWorkerRegistrar";
 import { ToastProvider } from "@/components/ui/Toast";
 
@@ -22,12 +23,13 @@ function ThemeSync() {
   return null;
 }
 
-/** Client providers for the root layout: toast host, service worker, theme attribute. */
+/** Client providers for the root layout: toast host, service worker + stale-build reload, theme attribute. */
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <ToastProvider>
       <ThemeSync />
       <ServiceWorkerRegistrar />
+      <BuildRefresh />
       {children}
     </ToastProvider>
   );

@@ -2,14 +2,18 @@ import type { NotificationKind } from "@/lib/db.types";
 
 /**
  * Default message templates — must match supabase/migrations/0008_seed.sql (and the
- * later per-kind seeds such as 0013_pickup_request_cancelled_template.sql).
+ * later per-kind seeds: 0013_pickup_request_cancelled_template.sql,
+ * 0015_trip_progress_templates.sql, which also rewrote the trip_departed default).
  * Used by /admin/templates for "Restore default" and the live preview.
  */
 export const TEMPLATE_DEFAULTS: Record<NotificationKind, { title: string; body: string }> = {
   daily_announcement: { title: "🚌 Shuttle today", body: "Departures: {times}. Fare {fare}, cash only. Tap to book your seat." },
   trip_reminder: { title: "🚌 Shuttle at {time}", body: "{seats_left}/{seats} seats left. {fare} cash. Tap to opt in." },
   trip_nudge: { title: "⏰ Leaving in {count} min", body: "Be at {pickup}. Have {fare} cash ready." },
-  trip_departed: { title: "🚌 Shuttle has left", body: "The {time} shuttle to {destination} has departed." },
+  trip_departed: { title: "🚌 Shuttle has left", body: "The {time} shuttle to {destination} has left {origin} — tap to follow it live." },
+  trip_boarding: { title: "🚌 Boarding now", body: "The {time} shuttle is boarding at {origin}. Be at {pickup} — leaves at {time}." },
+  trip_approaching: { title: "🚌 Shuttle is close", body: "The shuttle is about {count} min from {pickup}. Head there now." },
+  trip_arrived: { title: "🏁 Arrived", body: "The {time} shuttle has arrived at {destination}." },
   booking_confirmed: { title: "✅ Seat reserved", body: "You're on the {time} shuttle to {destination}. Pickup: {pickup}. {fare} cash." },
   booking_waitlisted: { title: "⏳ You're on the waitlist", body: "Position {count} for the {time} shuttle. We'll tell you if a seat opens." },
   booking_promoted: { title: "🎉 A seat opened up", body: "You're now confirmed for the {time} shuttle to {destination}. Be at {pickup}." },
@@ -50,7 +54,10 @@ export const TEMPLATE_META: Record<NotificationKind, TemplateMeta> = {
   daily_announcement: { label: "Daily announcement", when: "Every morning at the announcement time · all students with reminders on", placeholders: ["hostel", "campus", "times", "fare", "date"] },
   trip_reminder: { label: "Trip reminder", when: "Before each departure (reminder lead) · students without a seat", placeholders: ["time", "seats_left", "seats", "fare", "origin", "destination", "hostel"] },
   trip_nudge: { label: "Leaving-soon nudge", when: "Minutes before departure (nudge) · riders with a seat", placeholders: ["count", "time", "pickup", "fare", "destination"] },
-  trip_departed: { label: "Shuttle departed", when: "When the driver taps Depart · riders not on board", placeholders: ["time", "destination"] },
+  trip_departed: { label: "Shuttle departed", when: "When the driver taps Depart · booked riders, and every student with reminders on for trips to the hostel", placeholders: ["time", "origin", "destination", "hostel"] },
+  trip_boarding: { label: "Boarding now", when: "When the driver taps Boarding · riders with a seat", placeholders: ["time", "origin", "destination", "pickup", "hostel"] },
+  trip_approaching: { label: "Shuttle is close", when: "When the bus comes within 400 m of a rider's pickup point · that rider (once per trip)", placeholders: ["count", "pickup", "time", "destination"] },
+  trip_arrived: { label: "Shuttle arrived", when: "When the driver taps Arrived · riders on board", placeholders: ["time", "origin", "destination", "hostel"] },
   booking_confirmed: { label: "Seat confirmed", when: "Right after a student reserves a seat", placeholders: ["time", "destination", "pickup", "fare", "date"] },
   booking_waitlisted: { label: "Waitlisted", when: "When the shuttle is full and the student joins the waitlist", placeholders: ["count", "time", "destination", "pickup"] },
   booking_promoted: { label: "Promoted from waitlist", when: "When a seat opens up for a waitlisted student", placeholders: ["time", "destination", "pickup"] },

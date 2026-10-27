@@ -1360,6 +1360,9 @@ a {
   }
 
   /* ---------- map markers ---------- */
+  /* No transition on the marker itself: Leaflet positions it with a transform on every
+     fix and during pinch-zoom, and a transition there makes the bus lag the tiles on iOS.
+     Only the emoji inside rotates (its own transform-origin, composited, never clipped). */
   .k-bus-marker {
     width: 40px;
     height: 40px;
@@ -1371,6 +1374,13 @@ a {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 3px var(--accent);
     font-size: 22px;
     line-height: 1;
+    overflow: visible;
+  }
+
+  .k-bus-marker__emoji {
+    display: inline-block;
+    transform-origin: 50% 50%;
+    will-change: transform;
     transition: transform 400ms ease-out;
   }
 
@@ -1410,6 +1420,11 @@ a {
     justify-content: center;
     font-size: 24px;
     line-height: 1;
+    overflow: visible;
+  }
+
+  .k-pin-marker > span {
+    display: inline-block;
     filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
   }
 }
@@ -1466,8 +1481,9 @@ a {
   background: var(--surface-3);
 }
 
-/* Dark mode for the basemap: the provider has no dark tiles, so invert only the
-   tile pane. Markers, the trail, tooltips and controls live in other panes. */
+/* Dark mode for a basemap WITHOUT dark tiles (no NEXT_PUBLIC_MAP_TILE_URL_DARK): invert
+   only the tile pane. Markers, the trail, tooltips and controls live in other panes.
+   With a dark tile URL the class is never set and the (costly) filter never applies. */
 .k-map-dark .leaflet-tile-pane {
   filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.6);
 }

@@ -162,6 +162,12 @@ export function TrackingPanel({ trip, pickupLocations, settings }: TrackingPanel
           </div>
           <Pill tone={TRIP_STATUS_TONE[trip.status]}>{TRIP_STATUS_LABEL[trip.status]}</Pill>
         </div>
+        {tracking.status !== "idle" ? (
+          <p style={{ margin: "8px 0 0", color: "var(--hint)", fontSize: "var(--fs-sm)" }} aria-live="polite">
+            📡 Last sent {lastSent} · {tracking.sentCount} {tracking.sentCount === 1 ? "fix" : "fixes"}
+            {tracking.queued > 0 ? ` · ${tracking.queued} queued` : ""}
+          </p>
+        ) : null}
         {tracking.error ? (
           <p className="k-error" style={{ marginTop: 10 }}>
             {tracking.error}

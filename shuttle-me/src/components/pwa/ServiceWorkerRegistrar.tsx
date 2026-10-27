@@ -43,10 +43,14 @@ function postVapidKey(reg: ServiceWorkerRegistration): void {
  * Registers /sw.js once in production builds (or with NEXT_PUBLIC_SW_DEV=1),
  * with updateViaCache: "none" so the browser always checks the network for a
  * new worker. After registration it posts the VAPID public key to the worker.
- * When a new worker is installed behind a running one, shows
- * "🔄 Update ready — tap to reload"; tapping asks the worker to activate and
- * reloads once control changes. In development it instead unregisters any
- * leftover worker and clears the ks-* caches.
+ * Updates apply by themselves: when a new worker is installed behind a running
+ * one it is told to SKIP_WAITING right away (sw.js also calls skipWaiting +
+ * clients.claim) and the page reloads once on controllerchange, with a brief
+ * "🔄 Updating…" toast — no tap needed. The reload happens at most once per
+ * page load and never while the page is hidden; it is deferred to the next
+ * visibilitychange → visible instead. Coming back to the foreground also runs
+ * registration.update(). In development it instead unregisters any leftover
+ * worker and clears the ks-* caches.
  */
 export function ServiceWorkerRegistrar() {
   const { toast } = useToast();
@@ -57,46 +61,41 @@ export function ServiceWorkerRegistrar() {
       void cleanupDevWorker();
       return;
     }
-    let refreshing = false;
-    let wantReload = false;
+    // A controller at mount means a worker already ran this page: any later
+    // controllerchange is an update. Without one, the first controllerchange is
+    // just the first install claiming the page (clients.claim) — never reload for it.
+    let hadController = navigator.serviceWorker.controller !== null;
+    let reloaded = false;
+    let reloadWhenVisible = false;
+
+    const reloadOnce = () => {
+      if (reloaded) return;
+      if (document.visibilityState !== "visible") {
+        reloadWhenVisible = true;
+        return;
+      }
+      reloaded = true;
+      toast("🔄 Updating…", { ms: 1500 });
+      window.location.reload();
+    };
 
     const onControllerChange = () => {
       // A new worker took over: give it the key too.
       navigator.serviceWorker.ready.then(postVapidKey).catch(() => undefined);
-      if (refreshing || !wantReload) return;
-      refreshing = true;
-      window.location.reload();
+      if (hadController) reloadOnce();
+      hadController = true;
     };
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
-    const offerUpdate = (worker: ServiceWorker) => {
-      toast("🔄 Update ready — tap to reload", {
-        ms: 0,
-        onTap: () => {
-          wantReload = true;
-          if (worker.state === "activated" || navigator.serviceWorker.controller !== null) {
-            // Already swapped (sw.js calls skipWaiting on install): just reload.
-            worker.postMessage({ type: "SKIP_WAITING" });
-            window.setTimeout(() => {
-              if (!refreshing) {
-                refreshing = true;
-                window.location.reload();
-              }
-            }, 400);
-          } else {
-            worker.postMessage({ type: "SKIP_WAITING" });
-          }
-        },
-      });
-    };
+    const activateNow = (worker: ServiceWorker) => worker.postMessage({ type: "SKIP_WAITING" });
 
     const watch = (reg: ServiceWorkerRegistration) => {
-      if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+      if (reg.waiting && navigator.serviceWorker.controller) activateNow(reg.waiting);
       reg.addEventListener("updatefound", () => {
         const worker = reg.installing;
         if (!worker) return;
         worker.addEventListener("statechange", () => {
-          if (worker.state === "installed" && navigator.serviceWorker.controller) offerUpdate(worker);
+          if (worker.state === "installed" && navigator.serviceWorker.controller) activateNow(worker);
         });
       });
     };
@@ -108,9 +107,15 @@ export function ServiceWorkerRegistrar() {
         watch(reg);
         // The worker may still be installing: wait for an active one before posting the key.
         navigator.serviceWorker.ready.then(postVapidKey).catch(() => undefined);
-        // Check for a new worker whenever the app comes back to the foreground.
         onVisible = () => {
-          if (document.visibilityState === "visible") reg.update().catch(() => undefined);
+          if (document.visibilityState !== "visible") return;
+          // An update that activated while we were hidden reloads now; otherwise look for one.
+          if (reloadWhenVisible) {
+            reloadWhenVisible = false;
+            reloadOnce();
+            return;
+          }
+          reg.update().catch(() => undefined);
         };
         document.addEventListener("visibilitychange", onVisible);
       })

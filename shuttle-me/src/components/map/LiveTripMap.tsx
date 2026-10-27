@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PickupLocation, Trip } from "@/lib/db.types";
 import { estimateEtaSeconds, formatDistance, formatEta, haversineM } from "@/lib/geo";
 import { useTripLocation } from "@/hooks/useTripLocation";
-import { MAP_DARK_CLASS, TILE_ATTRIBUTION, TILE_MAX_ZOOM, TILE_URL } from "@/lib/map/tiles";
+import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
 
 export type LiveTripMapProps = {
   tripId: string;
@@ -39,20 +39,35 @@ function accentColor(): string {
   return v || "#0070dd";
 }
 
+const STALE_CLASS = "k-bus-marker--stale";
+
+/** Created once; heading and staleness are then applied in place (see updateBusMarker) so Leaflet never rebuilds the DOM node. */
 function busIcon(heading: number | null, stale: boolean): L.DivIcon {
-  const rot = heading == null ? 0 : Math.round(heading);
   return L.divIcon({
-    className: `k-bus-marker${stale ? " k-bus-marker--stale" : ""}`,
-    html: `<span style="display:inline-block;transform:rotate(${rot}deg);transition:transform 400ms ease-out" aria-hidden="true">🚌</span>`,
+    className: `k-bus-marker${stale ? ` ${STALE_CLASS}` : ""}`,
+    html: `<span class="k-bus-marker__emoji" style="transform:rotate(${headingDeg(heading)}deg)" aria-hidden="true">🚌</span>`,
     iconSize: [40, 40],
     iconAnchor: [20, 20],
   });
 }
 
+function headingDeg(heading: number | null): number {
+  return heading == null ? 0 : Math.round(heading);
+}
+
+/** Rotate the emoji and toggle the stale look without replacing the icon (keeps the CSS transition and the compositor layer). */
+function updateBusMarker(marker: L.Marker, heading: number | null, stale: boolean): void {
+  const el = marker.getElement();
+  if (!el) return;
+  el.classList.toggle(STALE_CLASS, stale);
+  const emoji = el.querySelector<HTMLElement>(".k-bus-marker__emoji");
+  if (emoji) emoji.style.transform = `rotate(${headingDeg(heading)}deg)`;
+}
+
 function pinIcon(mine: boolean): L.DivIcon {
   return L.divIcon({
     className: "k-pin-marker",
-    html: `<span aria-hidden="true" style="${mine ? "filter:drop-shadow(0 0 4px var(--accent))" : ""}">📍</span>`,
+    html: `<span aria-hidden="true" style="${mine ? "filter:drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 4px var(--accent))" : ""}">📍</span>`,
     iconSize: [28, 28],
     iconAnchor: [14, 26],
     tooltipAnchor: [0, -24],
@@ -69,9 +84,9 @@ const roundBtn: React.CSSProperties = {
 };
 
 /**
- * Leaflet map with the live bus (rotated 🚌 marker + trail), pickup pins, street
- * tiles (CSS-darkened in dark mode), round zoom / centre buttons and a LIVE /
- * last-seen chip.
+ * Leaflet map with the live bus (rotated 🚌 marker + blue trail), pickup pins,
+ * street tiles (dark layer or CSS-darkened, see src/lib/map/tiles.ts), round
+ * zoom / centre buttons and a LIVE / last-seen chip.
  */
 export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, settings, compact }: LiveTripMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,6 +94,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
   const tileRef = useRef<L.TileLayer | null>(null);
   const busRef = useRef<L.Marker | null>(null);
   const trailRef = useRef<L.Polyline | null>(null);
+  const trailCasingRef = useRef<L.Polyline | null>(null);
   const pinsRef = useRef<L.LayerGroup | null>(null);
   const fittedRef = useRef(false);
   const [follow, setFollow] = useState(true);
@@ -112,20 +128,32 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     map.attributionControl.setPrefix(false);
     mapRef.current = map;
 
-    // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
-    tileRef.current = L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM, detectRetina: false, crossOrigin: true }).addTo(map);
-
-    // One tile layer for both schemes: dark mode is a CSS filter on the tile pane (globals.css).
+    // Tiles: with a dark provider URL the LAYER follows prefers-color-scheme (swapped on
+    // change); otherwise one layer for both schemes and dark mode is a CSS filter on the
+    // tile pane (globals.css). The trail colour re-reads --accent on every change.
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const applyTiles = () => {
-      el.classList.toggle(MAP_DARK_CLASS, mq.matches);
+    tileRef.current = L.tileLayer(tileUrlFor(HAS_DARK_TILES && mq.matches), TILE_LAYER_OPTIONS).addTo(map);
+    const applyScheme = () => {
+      const dark = mq.matches;
+      if (HAS_DARK_TILES) {
+        const url = tileUrlFor(dark);
+        const current = tileRef.current as (L.TileLayer & { _url?: string }) | null;
+        if (current && current._url !== url) {
+          current.remove();
+          tileRef.current = L.tileLayer(url, TILE_LAYER_OPTIONS).addTo(map);
+        }
+      } else {
+        el.classList.toggle(MAP_DARK_CLASS, dark);
+      }
       trailRef.current?.setStyle({ color: accentColor() });
     };
-    applyTiles();
-    mq.addEventListener("change", applyTiles);
+    applyScheme();
+    mq.addEventListener("change", applyScheme);
 
     pinsRef.current = L.layerGroup().addTo(map);
-    trailRef.current = L.polyline([], { color: accentColor(), weight: 4, opacity: 0.85, lineJoin: "round" }).addTo(map);
+    // The driver's path: a thin white casing under a bold accent line so it reads on any basemap.
+    trailCasingRef.current = L.polyline([], { color: "#ffffff", weight: 8, opacity: 0.8, lineJoin: "round", lineCap: "round", interactive: false }).addTo(map);
+    trailRef.current = L.polyline([], { color: accentColor(), weight: 5, opacity: 1, lineJoin: "round", lineCap: "round", interactive: false }).addTo(map);
 
     // Dragging the map turns off "follow the bus" until the user recentres.
     map.on("dragstart", () => setFollow(false));
@@ -138,12 +166,13 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     return () => {
       window.clearTimeout(t);
       ro?.disconnect();
-      mq.removeEventListener("change", applyTiles);
+      mq.removeEventListener("change", applyScheme);
       map.remove();
       mapRef.current = null;
       tileRef.current = null;
       busRef.current = null;
       trailRef.current = null;
+      trailCasingRef.current = null;
       pinsRef.current = null;
       fittedRef.current = false;
     };
@@ -163,9 +192,11 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     }
   }, [pickupLocations, myPickupLocationId]);
 
-  // Trail.
+  // Trail: every point known (initial fetch + broadcasts + polling merges), from the first fix on.
   useEffect(() => {
-    trailRef.current?.setLatLngs(points.map((p) => [p.lat, p.lng] as L.LatLngTuple));
+    const latLngs = points.map((p) => [p.lat, p.lng] as L.LatLngTuple);
+    trailCasingRef.current?.setLatLngs(latLngs);
+    trailRef.current?.setLatLngs(latLngs);
   }, [points]);
 
   // Bus marker + follow + first fit.
@@ -178,7 +209,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
         busRef.current = L.marker(ll, { icon: busIcon(busPos.heading, stale), zIndexOffset: 1000, keyboard: false }).addTo(map);
       } else {
         busRef.current.setLatLng(ll);
-        busRef.current.setIcon(busIcon(busPos.heading, stale));
+        updateBusMarker(busRef.current, busPos.heading, stale);
       }
     }
     if (!fittedRef.current) {
@@ -227,7 +258,13 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
         boxShadow: "var(--shadow)",
       }}
     >
-      <div ref={containerRef} style={{ position: "absolute", inset: 0 }} aria-label="Live shuttle map" role="application" />
+      <div
+        ref={containerRef}
+        // touch-action none: Leaflet handles every gesture itself, so Safari must not try to scroll or double-tap-zoom the page.
+        style={{ position: "absolute", inset: 0, touchAction: "none", WebkitTapHighlightColor: "transparent" }}
+        aria-label="Live shuttle map"
+        role="application"
+      />
 
       {/* status chip */}
       <div style={{ position: "absolute", top: 10, left: 10, zIndex: 500, display: "flex", gap: 6, alignItems: "center" }}>

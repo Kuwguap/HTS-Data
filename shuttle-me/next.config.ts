@@ -1,8 +1,12 @@
 import type { NextConfig } from "next";
 
+/** Short git commit of this build (Vercel sets VERCEL_GIT_COMMIT_SHA); "dev" elsewhere. Compared with /api/health by BuildRefresh. */
+const buildCommit = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || "dev";
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  env: { NEXT_PUBLIC_BUILD_COMMIT: buildCommit },
   // Playwright and curl talk to the dev server via 127.0.0.1; Next 16 treats that
   // as a cross-origin dev host unless listed here.
   allowedDevOrigins: ["127.0.0.1", "localhost"],

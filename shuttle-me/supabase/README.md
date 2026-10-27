@@ -20,6 +20,8 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0011_reseat_guard.sql` | `set_booking_status` re-created: re-seating a no-show/cancelled rider on a full trip raises `CONFLICT` instead of overbooking |
 | `0012_pickup_request_cancelled.sql` | enum value `notification_kind.pickup_request_cancelled` (the driver hears when a rider withdraws an accepted pickup request) |
 | `0013_pickup_request_cancelled_template.sql` | its default `message_templates` row — a separate file because a new enum value cannot be used in the transaction that adds it |
+| `0014_trip_progress_kinds.sql` | enum values `trip_boarding`, `trip_approaching`, `trip_arrived` (live trip progress from the driver routes) |
+| `0015_trip_progress_templates.sql` | their default `message_templates` rows, plus the new `trip_departed` default body ("… has left {origin} — tap to follow it live.") applied only where the stored body is still the 0008 default |
 
 All migrations are idempotent: re-applying any of them on an already-migrated database
 is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conflict do nothing`).

@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import type * as Leaflet from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
-import { MAP_DARK_CLASS, TILE_ATTRIBUTION, TILE_MAX_ZOOM, TILE_URL } from "@/lib/map/tiles";
+import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
 
 export type LocationPickerProps = {
   lat: number | null;
@@ -26,7 +26,7 @@ function pinIcon(L: typeof Leaflet) {
 }
 
 /**
- * Small Leaflet map (street tiles, CSS-darkened in dark mode) to place a pickup point: tap to move the pin,
+ * Small Leaflet map (street tiles; dark layer or CSS-darkened, see src/lib/map/tiles.ts) to place a pickup point: tap to move the pin,
  * or use the phone's GPS. Loaded client-side only — import it with next/dynamic
  * ({ ssr: false }).
  */
@@ -35,6 +35,7 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
   const mapRef = useRef<Leaflet.Map | null>(null);
   const markerRef = useRef<Leaflet.Marker | null>(null);
   const leafletRef = useRef<typeof Leaflet | null>(null);
+  const tileRef = useRef<Leaflet.TileLayer | null>(null);
   const onChangeRef = useRef(onChange);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,13 +50,28 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
       const L = (await import("leaflet")).default ?? (await import("leaflet"));
       if (cancelled || !containerRef.current || mapRef.current) return;
       leafletRef.current = L;
-      const dark = document.documentElement.dataset.theme === "dark";
+      const el = containerRef.current;
       const start: [number, number] = lat != null && lng != null ? [lat, lng] : DEFAULT_CENTER;
-      const map = L.map(containerRef.current, { center: start, zoom: 15, zoomControl: true, attributionControl: true });
-      // One tile layer for both schemes: dark mode is a CSS filter on the tile pane (globals.css).
-      containerRef.current.classList.toggle(MAP_DARK_CLASS, dark);
-      // crossOrigin: tiles come back as real (non-opaque) responses so sw.js can cache them.
-      L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: TILE_MAX_ZOOM, crossOrigin: true }).addTo(map);
+      const map = L.map(el, { center: start, zoom: 15, zoomControl: true, attributionControl: true });
+      // Same scheme handling as LiveTripMap: swap the tile layer when the provider has dark
+      // tiles, otherwise one layer + the CSS filter on the tile pane (globals.css).
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      tileRef.current = L.tileLayer(tileUrlFor(HAS_DARK_TILES && mq.matches), TILE_LAYER_OPTIONS).addTo(map);
+      const applyScheme = () => {
+        if (HAS_DARK_TILES) {
+          const url = tileUrlFor(mq.matches);
+          const current = tileRef.current as (Leaflet.TileLayer & { _url?: string }) | null;
+          if (current && current._url !== url) {
+            current.remove();
+            tileRef.current = L.tileLayer(url, TILE_LAYER_OPTIONS).addTo(map);
+          }
+        } else {
+          el.classList.toggle(MAP_DARK_CLASS, mq.matches);
+        }
+      };
+      applyScheme();
+      mq.addEventListener("change", applyScheme);
+      map.once("remove", () => mq.removeEventListener("change", applyScheme));
       if (lat != null && lng != null) markerRef.current = L.marker(start, { icon: pinIcon(L) }).addTo(map);
       map.on("click", (e: Leaflet.LeafletMouseEvent) => {
         const next: [number, number] = [Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6))];
@@ -69,6 +85,7 @@ export default function LocationPicker({ lat, lng, onChange, height = 220 }: Loc
       mapRef.current?.remove();
       mapRef.current = null;
       markerRef.current = null;
+      tileRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; prop changes are applied by the effect below
   }, []);
