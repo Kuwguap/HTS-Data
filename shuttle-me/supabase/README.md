@@ -22,6 +22,7 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0013_pickup_request_cancelled_template.sql` | its default `message_templates` row — a separate file because a new enum value cannot be used in the transaction that adds it |
 | `0014_trip_progress_kinds.sql` | enum values `trip_boarding`, `trip_approaching`, `trip_arrived` (live trip progress from the driver routes) |
 | `0015_trip_progress_templates.sql` | their default `message_templates` rows, plus the new `trip_departed` default body ("… has left {origin} — tap to follow it live.") applied only where the stored body is still the 0008 default |
+| `0016_settings_coords.sql` | nullable `settings.hostel_lat/lng` and `campus_lat/lng` (range-checked like `pickup_locations`, selectable by `authenticated`): the destinations of the live map's road route (`/api/trips/[id]/route`) |
 
 All migrations are idempotent: re-applying any of them on an already-migrated database
 is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conflict do nothing`).

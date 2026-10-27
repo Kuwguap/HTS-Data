@@ -1,7 +1,23 @@
 import { z } from "zod";
 import { isoDate, isoDateTime, lat, lng, optionalText, shortText, timeOfDay, tripDirection, userRole, uuid } from "./common";
 
-export const settingsSchema = z.object({
+/** A coordinate the admin may leave empty (null clears it). */
+const optionalLat = lat.nullable().optional();
+const optionalLng = lng.nullable().optional();
+
+/** hostel_lat/lng and campus_lat/lng come as a pair or not at all. */
+function coordPairs(v: { hostel_lat?: number | null; hostel_lng?: number | null; campus_lat?: number | null; campus_lng?: number | null }, ctx: z.RefinementCtx) {
+  for (const [latKey, lngKey] of [
+    ["hostel_lat", "hostel_lng"],
+    ["campus_lat", "campus_lng"],
+  ] as const) {
+    if ((v[latKey] == null) !== (v[lngKey] == null)) {
+      ctx.addIssue({ code: "custom", path: [v[latKey] == null ? latKey : lngKey], message: "Pick a spot on the map (both latitude and longitude)." });
+    }
+  }
+}
+
+const settingsShape = {
   hostel_name: shortText(80).min(2),
   campus_name: shortText(80).min(1),
   timezone: shortText(60)
@@ -24,9 +40,16 @@ export const settingsSchema = z.object({
   location_stale_seconds: z.number().int().min(45).max(3600),
   signup_code: optionalText(40),
   default_driver_id: uuid.optional().nullable(),
-});
+  // Where the hostel / campus are: the live map's road route ends there (0016).
+  hostel_lat: optionalLat,
+  hostel_lng: optionalLng,
+  campus_lat: optionalLat,
+  campus_lng: optionalLng,
+};
+// zod 4 refuses `.partial()` on a refined object, so the pair rule is applied to both.
+export const settingsSchema = z.object(settingsShape).superRefine(coordPairs);
 export type SettingsInput = z.infer<typeof settingsSchema>;
-export const settingsPatchSchema = settingsSchema.partial();
+export const settingsPatchSchema = z.object(settingsShape).partial().superRefine(coordPairs);
 
 // Patch schemas are built from default-free shapes: zod 4's `.partial()` still applies
 // `.default()` values, which would turn `{ is_active: false }` into a reset of other columns.

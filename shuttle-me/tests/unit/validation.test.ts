@@ -168,6 +168,17 @@ describe("admin schemas", () => {
     expect(settingsPatchSchema.safeParse({ location_stale_seconds: 90 }).success).toBe(true);
     expect(settingsPatchSchema.safeParse({ location_stale_seconds: 3601 }).success).toBe(false);
   });
+  it("hostel / campus coordinates are optional, range-checked and come as a pair", () => {
+    expect(settingsPatchSchema.safeParse({ hostel_lat: 6.69, hostel_lng: -1.56 }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ campus_lat: null, campus_lng: null }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ fare_pesewas: 1000 }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ hostel_lat: 91, hostel_lng: -1.56 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ campus_lat: 6.67, campus_lng: 181 }).success).toBe(false);
+    const half = settingsPatchSchema.safeParse({ campus_lat: 6.67 });
+    expect(half.success).toBe(false);
+    expect(fieldErrors(half).campus_lng?.[0]).toMatch(/both latitude and longitude/);
+    expect(fieldErrors(settingsPatchSchema.safeParse({ hostel_lat: null, hostel_lng: -1.56 })).hostel_lat?.[0]).toMatch(/both/);
+  });
 });
 
 describe("safeNextPath (post-login redirect guard)", () => {

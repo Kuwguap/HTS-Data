@@ -26,6 +26,34 @@ export function bearingDeg(a: LatLng, b: LatLng): number {
   return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
 }
 
+/**
+ * Shortest distance in metres from `point` to the polyline `line` (point-to-segment
+ * on an equirectangular projection centred on the point: accurate to well under 1 %
+ * at city scale, which is all the "is the bus still on its route?" check needs).
+ * Infinity for an empty line.
+ */
+export function distanceToPolylineM(point: LatLng, line: LatLng[]): number {
+  if (line.length === 0) return Number.POSITIVE_INFINITY;
+  const k = (Math.PI / 180) * EARTH_RADIUS_M;
+  const cosLat = Math.cos(toRad(point.lat));
+  const project = (p: LatLng) => ({ x: (p.lng - point.lng) * cosLat * k, y: (p.lat - point.lat) * k });
+  let best = Number.POSITIVE_INFINITY;
+  let a = project(line[0]!);
+  if (line.length === 1) return Math.hypot(a.x, a.y);
+  for (let i = 1; i < line.length; i++) {
+    const b = project(line[i]!);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    // The point is at the origin: t is where its foot falls on the segment, clamped to the ends.
+    const t = len2 === 0 ? 0 : Math.min(1, Math.max(0, -(a.x * dx + a.y * dy) / len2));
+    const d = Math.hypot(a.x + t * dx, a.y + t * dy);
+    if (d < best) best = d;
+    a = b;
+  }
+  return best;
+}
+
 export type Fix = LatLng & {
   accuracy: number | null;
   heading: number | null;

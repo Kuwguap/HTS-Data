@@ -3,6 +3,7 @@ import {
   TRACKING_DEFAULTS,
   bearingDeg,
   detectPlatform,
+  distanceToPolylineM,
   estimateEtaSeconds,
   formatDistance,
   formatEta,
@@ -26,6 +27,38 @@ describe("haversineM", () => {
   });
   it("one degree of latitude is about 111 km", () => {
     expect(haversineM({ lat: 0, lng: 0 }, { lat: 1, lng: 0 })).toBeCloseTo(111_195, -2);
+  });
+});
+
+describe("distanceToPolylineM", () => {
+  // A north–south road of ~1.1 km near KNUST, then a bend to the east.
+  const road = [
+    { lat: 6.67, lng: -1.57 },
+    { lat: 6.68, lng: -1.57 },
+    { lat: 6.68, lng: -1.56 },
+  ];
+  it("is ~0 for a point on a segment", () => {
+    expect(distanceToPolylineM({ lat: 6.675, lng: -1.57 }, road)).toBeLessThan(0.01);
+    expect(distanceToPolylineM({ lat: 6.68, lng: -1.565 }, road)).toBeLessThan(0.01);
+  });
+  it("measures the perpendicular offset for a point beside the line", () => {
+    // 0.001° of longitude at 6.68° N ≈ 110.4 m
+    const d = distanceToPolylineM({ lat: 6.675, lng: -1.569 }, road);
+    expect(d).toBeGreaterThan(108);
+    expect(d).toBeLessThan(113);
+    // the bend: 50 m off the corner diagonally is still ~50 m to the nearest segment
+    expect(distanceToPolylineM({ lat: 6.6795, lng: -1.5705 }, road)).toBeGreaterThan(50);
+  });
+  it("uses the distance to the nearest endpoint beyond the ends", () => {
+    const beyondStart = { lat: 6.669, lng: -1.57 }; // 0.001° of latitude ≈ 111 m south of the first point
+    expect(distanceToPolylineM(beyondStart, road)).toBeCloseTo(haversineM(beyondStart, road[0]!), -1);
+    const beyondEnd = { lat: 6.68, lng: -1.559 };
+    expect(distanceToPolylineM(beyondEnd, road)).toBeCloseTo(haversineM(beyondEnd, road[2]!), -1);
+  });
+  it("handles degenerate lines", () => {
+    expect(distanceToPolylineM({ lat: 6.67, lng: -1.57 }, [])).toBe(Number.POSITIVE_INFINITY);
+    expect(distanceToPolylineM({ lat: 6.671, lng: -1.57 }, [road[0]!])).toBeCloseTo(111, -1);
+    expect(distanceToPolylineM({ lat: 6.671, lng: -1.57 }, [road[0]!, road[0]!])).toBeCloseTo(111, -1);
   });
 });
 

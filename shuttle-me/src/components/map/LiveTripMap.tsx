@@ -4,9 +4,10 @@
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PickupLocation, Trip } from "@/lib/db.types";
-import { estimateEtaSeconds, formatDistance, formatEta, haversineM } from "@/lib/geo";
+import type { BookingStatus, PickupLocation, Trip } from "@/lib/db.types";
+import { estimateEtaSeconds, formatDistance, formatEta, haversineM, type LatLng } from "@/lib/geo";
 import { useTripLocation } from "@/hooks/useTripLocation";
+import { useTripRoute, viaKeyOf } from "@/hooks/useTripRoute";
 import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
 
 export type LiveTripMapProps = {
@@ -15,6 +16,8 @@ export type LiveTripMapProps = {
   pickupLocations: PickupLocation[];
   /** The viewer's own pickup point (highlighted with a "You" tooltip, used for distance/ETA). */
   myPickupLocationId?: string | null;
+  /** The viewer's booking status: only a `confirmed` (not yet boarded) rider's pickup becomes a via point of the road route. */
+  myBookingStatus?: BookingStatus | null;
   settings: { timezone: string; location_stale_seconds: number; hostel_name: string; campus_name: string };
   /** Small 220px preview (driver tracking screen) instead of a tall map. */
   compact?: boolean;
@@ -22,6 +25,10 @@ export type LiveTripMapProps = {
 
 // Kumasi (KNUST) — only used before any pin or fix is known.
 const FALLBACK_CENTER: L.LatLngExpression = [6.6745, -1.5716];
+/** Once the bus is this close to the viewer's pickup the route no longer detours through it. */
+const VIA_REACHED_M = 80;
+
+const toTuple = (p: LatLng): L.LatLngTuple => [p.lat, p.lng];
 
 /** "just now", "45s ago", "3 min ago" from a seconds count (pure; the hook ticks the number). */
 function agoFromSeconds(s: number): string {
@@ -84,19 +91,22 @@ const roundBtn: React.CSSProperties = {
 };
 
 /**
- * Leaflet map with the live bus (rotated 🚌 marker + blue trail), pickup pins,
- * street tiles (dark layer or CSS-darkened, see src/lib/map/tiles.ts), round
- * zoom / centre buttons and a LIVE / last-seen chip.
+ * Leaflet map with the live bus (rotated 🚌 marker + blue trail snapped to roads),
+ * the dashed road route ahead, pickup pins, street tiles (dark layer or
+ * CSS-darkened, see src/lib/map/tiles.ts), round zoom / centre buttons and a
+ * LIVE / last-seen chip.
  */
-export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, settings, compact }: LiveTripMapProps) {
+export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, myBookingStatus, settings, compact }: LiveTripMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileRef = useRef<L.TileLayer | null>(null);
   const busRef = useRef<L.Marker | null>(null);
   const trailRef = useRef<L.Polyline | null>(null);
   const trailCasingRef = useRef<L.Polyline | null>(null);
+  const routeRef = useRef<L.Polyline | null>(null);
   const pinsRef = useRef<L.LayerGroup | null>(null);
   const fittedRef = useRef(false);
+  const routeFittedRef = useRef(false);
   const [follow, setFollow] = useState(true);
 
   const { trip, points, lastPoint, isLive, lastSeenSeconds, source } = useTripLocation({
@@ -113,6 +123,25 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
 
   const stale = !isLive;
   const myPickup = myPickupLocationId ? (pickupLocations.find((p) => p.id === myPickupLocationId) ?? null) : null;
+
+  // The route detours through the viewer's pickup only while they still wait there for the bus.
+  const viaActive = !!myPickup && myBookingStatus === "confirmed" && !!busPos && haversineM(busPos, myPickup) > VIA_REACHED_M;
+  const viaPos = useMemo<LatLng | null>(() => (viaActive && myPickup ? { lat: myPickup.lat, lng: myPickup.lng } : null), [viaActive, myPickup]);
+  const { route, matched } = useTripRoute({
+    tripId,
+    busPos,
+    viaPos,
+    enabled: trip.status === "boarding" || trip.status === "departed",
+    latestPointKey: lastPoint?.id ?? null,
+  });
+
+  // Travelled trail: the road-snapped geometry for the fixes it covers, raw fixes before and after it.
+  const trailLatLngs = useMemo<L.LatLngTuple[]>(() => {
+    if (!matched) return points.map(toTuple);
+    const before = matched.fromRecordedAt ? points.filter((p) => p.recorded_at < matched.fromRecordedAt!) : [];
+    const after = matched.throughRecordedAt ? points.filter((p) => p.recorded_at > matched.throughRecordedAt!) : [];
+    return [...before.map(toTuple), ...matched.geometry.map(toTuple), ...after.map(toTuple)];
+  }, [points, matched]);
 
   // Create the map once.
   useEffect(() => {
@@ -145,12 +174,16 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       } else {
         el.classList.toggle(MAP_DARK_CLASS, dark);
       }
-      trailRef.current?.setStyle({ color: accentColor() });
+      const accent = accentColor();
+      trailRef.current?.setStyle({ color: accent });
+      routeRef.current?.setStyle({ color: accent });
     };
     applyScheme();
     mq.addEventListener("change", applyScheme);
 
     pinsRef.current = L.layerGroup().addTo(map);
+    // The road ahead: dotted accent line (under the trail; markers live in a higher pane anyway).
+    routeRef.current = L.polyline([], { color: accentColor(), weight: 5, opacity: 0.55, dashArray: "2 10", lineCap: "round", lineJoin: "round", interactive: false }).addTo(map);
     // The driver's path: a thin white casing under a bold accent line so it reads on any basemap.
     trailCasingRef.current = L.polyline([], { color: "#ffffff", weight: 8, opacity: 0.8, lineJoin: "round", lineCap: "round", interactive: false }).addTo(map);
     trailRef.current = L.polyline([], { color: accentColor(), weight: 5, opacity: 1, lineJoin: "round", lineCap: "round", interactive: false }).addTo(map);
@@ -173,8 +206,10 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       busRef.current = null;
       trailRef.current = null;
       trailCasingRef.current = null;
+      routeRef.current = null;
       pinsRef.current = null;
       fittedRef.current = false;
+      routeFittedRef.current = false;
     };
   }, []);
 
@@ -192,12 +227,25 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     }
   }, [pickupLocations, myPickupLocationId]);
 
-  // Trail: every point known (initial fetch + broadcasts + polling merges), from the first fix on.
+  // Trail: the road-snapped geometry when the matcher answered, else every raw fix from the first on.
   useEffect(() => {
-    const latLngs = points.map((p) => [p.lat, p.lng] as L.LatLngTuple);
-    trailCasingRef.current?.setLatLngs(latLngs);
-    trailRef.current?.setLatLngs(latLngs);
-  }, [points]);
+    trailCasingRef.current?.setLatLngs(trailLatLngs);
+    trailRef.current?.setLatLngs(trailLatLngs);
+  }, [trailLatLngs]);
+
+  // Route ahead. The first route widens the initial view once (unless the viewer already dragged).
+  useEffect(() => {
+    const map = mapRef.current;
+    routeRef.current?.setLatLngs(route ? route.geometry.map(toTuple) : []);
+    if (!map || !route || routeFittedRef.current) return;
+    routeFittedRef.current = true;
+    if (!follow) return;
+    const pts: L.LatLngTuple[] = [...pickupLocations.map(toTuple), ...route.geometry.map(toTuple)];
+    if (busPos) pts.push([busPos.lat, busPos.lng]);
+    map.fitBounds(L.latLngBounds(pts), { padding: [36, 36], maxZoom: 16 });
+    fittedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fit once when the first route lands; later bus/pin changes must not refit
+  }, [route]);
 
   // Bus marker + follow + first fit.
   useEffect(() => {
@@ -213,8 +261,9 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       }
     }
     if (!fittedRef.current) {
-      const pts: L.LatLngTuple[] = pickupLocations.map((p) => [p.lat, p.lng]);
+      const pts: L.LatLngTuple[] = pickupLocations.map(toTuple);
       if (busPos) pts.push([busPos.lat, busPos.lng]);
+      if (route) pts.push(...route.geometry.map(toTuple));
       if (pts.length >= 2) {
         map.fitBounds(L.latLngBounds(pts), { padding: [36, 36], maxZoom: 16 });
         fittedRef.current = true;
@@ -226,6 +275,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     } else if (busPos && follow) {
       map.panTo([busPos.lat, busPos.lng], { animate: true, duration: 0.6 });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `route` is only read for the one-off first fit; its own effect handles later changes
   }, [busPos, stale, follow, pickupLocations]);
 
   const centreOnBus = () => {
@@ -235,8 +285,10 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     map.setView([busPos.lat, busPos.lng], Math.max(map.getZoom(), 15), { animate: true });
   };
 
-  const distanceM = busPos && myPickup ? haversineM(busPos, myPickup) : null;
-  const etaText = distanceM != null ? formatEta(estimateEtaSeconds(distanceM)) : null;
+  // ETA to the viewer's pickup: the road route's first leg (bus → pickup) when the route went through it, else straight-line × 1.3.
+  const roadLeg = route && viaPos && route.viaKey === viaKeyOf(viaPos) && route.legs.length >= 2 ? route.legs[0]! : null;
+  const distanceM = roadLeg ? roadLeg.distanceM : busPos && myPickup ? haversineM(busPos, myPickup) : null;
+  const etaText = roadLeg ? formatEta(roadLeg.durationS) : distanceM != null ? formatEta(estimateEtaSeconds(distanceM)) : null;
   const distText = formatDistance(distanceM);
 
   let chip: { live: boolean; text: string };
@@ -331,7 +383,9 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
             <strong style={{ display: "block", fontSize: "var(--fs-md)" }}>
               {distText} to {myPickup.name}
             </strong>
-            <span style={{ color: "var(--hint)" }}>{etaText ? `About ${etaText}${stale ? " · last known position" : ""}` : "Almost there"}</span>
+            <span style={{ color: "var(--hint)" }}>
+              {etaText ? `About ${etaText}${roadLeg ? ` · ${distText} by road` : ""}${stale ? " · last known position" : ""}` : "Almost there"}
+            </span>
           </span>
         </div>
       ) : null}

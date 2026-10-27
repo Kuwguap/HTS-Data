@@ -2,20 +2,12 @@ import { ApiError, ok, withHandler, type RouteCtx } from "@/lib/api";
 import { isStaff, requireUser } from "@/lib/auth/require";
 import { getSettings } from "@/lib/data/settings";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { addDays, localDateString } from "@/lib/time";
+import { withinStudentWindow } from "@/lib/trips/visibility";
 import { uuid } from "@/lib/validation/common";
 
 export const dynamic = "force-dynamic";
 
 const MAX_POINTS = 500;
-
-/**
- * Same window as the trips RLS policy (0006_rls.sql): students see trips from
- * local yesterday onwards; staff see everything. Older trips read as missing.
- */
-function withinStudentWindow(serviceDate: string, timeZone: string, now = new Date()): boolean {
-  return serviceDate >= localDateString(addDays(now, -1), timeZone);
-}
 
 /**
  * GET /api/trips/[id]/location?since=<lastPointId> — polling fallback for the

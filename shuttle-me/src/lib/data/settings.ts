@@ -24,6 +24,10 @@ export const DEFAULT_SETTINGS: Settings = {
   location_stale_seconds: 90,
   signup_code: null,
   default_driver_id: null,
+  hostel_lat: null,
+  hostel_lng: null,
+  campus_lat: null,
+  campus_lng: null,
   updated_at: new Date(0).toISOString(),
   updated_by: null,
 };

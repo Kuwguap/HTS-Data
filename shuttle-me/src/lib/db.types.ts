@@ -106,6 +106,10 @@ export type Database = {
           location_stale_seconds: number;
           signup_code: string | null;
           default_driver_id: string | null;
+          hostel_lat: number | null;
+          hostel_lng: number | null;
+          campus_lat: number | null;
+          campus_lng: number | null;
           updated_at: string;
           updated_by: string | null;
         };
@@ -129,6 +133,10 @@ export type Database = {
           location_stale_seconds?: number;
           signup_code?: string | null;
           default_driver_id?: string | null;
+          hostel_lat?: number | null;
+          hostel_lng?: number | null;
+          campus_lat?: number | null;
+          campus_lng?: number | null;
           updated_at?: string;
           updated_by?: string | null;
         };
@@ -152,6 +160,10 @@ export type Database = {
           location_stale_seconds?: number;
           signup_code?: string | null;
           default_driver_id?: string | null;
+          hostel_lat?: number | null;
+          hostel_lng?: number | null;
+          campus_lat?: number | null;
+          campus_lng?: number | null;
           updated_at?: string;
           updated_by?: string | null;
         };

@@ -6,7 +6,8 @@ morning WhatsApp announcement and the "shuttle is at KSB" messages with:
 - automatic **push reminders** before each departure so students opt in for a seat,
 - one-tap **seat reservations** (pick a pickup point, agree to pay the GH₵ fare in cash),
 - a live **manifest and notifications for the driver**,
-- **live bus tracking** on a map while the driver keeps the app open,
+- **live bus tracking** on a map while the driver keeps the app open — the trail and the road
+  ahead follow real streets (set the hostel and campus locations in `/admin/settings`),
 - **pickup requests** the driver accepts or declines,
 - one-tap **return-trip announcements** ("Shuttle at KSB → hostel, leaving in 10 min").
 
@@ -69,6 +70,7 @@ Useful scripts:
 | `CRON_SECRET` | server only | bearer token `pg_cron`/cron-job.org must send to `/api/cron/tick` |
 | `NEXT_PUBLIC_APP_URL` | client | public URL, used in the install guide and push links |
 | `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_URL_DARK`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION`, `NEXT_PUBLIC_MAP_TILE_MAX_NATIVE_ZOOM` | client, optional | basemap templates (production: CARTO Voyager / dark_all with the hostel key, `{r}` = retina), attribution and the provider's deepest zoom (default 18 on cartocdn.com, else 19). Default Esri World Street Map; see `src/lib/map/tiles.ts` |
+| `ROUTER_BASE_URL` | server only, optional | OSRM-compatible router for the live map's road route and road-snapped trail (default `https://router.project-osrm.org`, the rate-limited public demo). Calls are cached, time-boxed and best-effort: the map draws straight lines when the router is unavailable. See `src/components/map/README.md` |
 | `NEXT_PUBLIC_BUILD_COMMIT` | set by `next.config.ts` | short `VERCEL_GIT_COMMIT_SHA` (or `dev`) baked into the bundle; `BuildRefresh` compares it with `/api/health` on every return to the foreground and reloads a stale installed app |
 
 ## Deploying

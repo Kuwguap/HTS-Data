@@ -47,6 +47,7 @@ export default async function TripMapPage({ params }: { params: Promise<{ id: st
             initialTrip={plainTrip}
             pickupLocations={pickupLocations}
             myPickupLocationId={mine?.pickup_location_id ?? null}
+            myBookingStatus={mine?.status ?? null}
             settings={{
               timezone: settings.timezone,
               location_stale_seconds: settings.location_stale_seconds,
