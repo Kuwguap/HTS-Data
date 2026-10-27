@@ -300,18 +300,40 @@ describe("public/sw.js mirrors sw-logic", () => {
     expect(classifyRequest("https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf", "cors", origin)).toBe("tile");
     expect(classifyRequest("https://tiles.openfreemap.org/sprites/ofm_f384/ofm@2x.png", "cors", origin)).toBe("tile");
     expect(classifyRequest("https://tiles.openfreemap.org/natural_earth/ne2sr/3/4/3.png", "cors", origin)).toBe("tile");
-    // The style and the tilejson name the current (dated) tile set: never served from cache.
-    expect(classifyRequest("https://tiles.openfreemap.org/styles/bright", "cors", origin)).toBe("passthrough");
-    expect(classifyRequest("https://tiles.openfreemap.org/planet", "cors", origin)).toBe("passthrough");
+    // The style and the tilejson name the current (dated) tile set: network-first, last copy offline.
+    expect(classifyRequest("https://tiles.openfreemap.org/styles/bright", "cors", origin)).toBe("doc");
+    expect(classifyRequest("https://tiles.openfreemap.org/planet", "cors", origin)).toBe("doc");
+    expect(classifyRequest("https://tiles.openfreemap.org/other", "cors", origin)).toBe("passthrough");
     expect(classifyRequest("https://evil.example.com/tiles.openfreemap.org/planet/x/1/1/1.pbf", "cors", origin)).toBe("passthrough");
 
     const sw = loadSw();
     await sw.fire("fetch", { request: { url: tile, mode: "cors", method: "GET" } });
     await new Promise((r) => setTimeout(r, 0));
     expect(sw.stores.get("ks-tiles-" + swVersion())?.size).toBe(1);
-    const before = sw.fetch.mock.calls.length;
-    await sw.fire("fetch", { request: { url: "https://tiles.openfreemap.org/styles/bright", mode: "cors", method: "GET" } });
-    expect(sw.fetch.mock.calls.length).toBe(before);
+  });
+
+  it("fetch: the OpenFreeMap style goes to the network every time and is served from the last copy when offline", async () => {
+    const sw = loadSw();
+    const style = { url: "https://tiles.openfreemap.org/styles/bright", mode: "cors", method: "GET" };
+    await sw.fire("fetch", { request: style });
+    await sw.fire("fetch", { request: style });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sw.fetch.mock.calls.length).toBe(2);
+    expect(sw.stores.get("ks-static-" + swVersion())?.get(style.url)?.body).toBe("body");
+
+    sw.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const ev = (await sw.fire("fetch", { request: style })) as { respondWith: unknown };
+    expect(ev).toBeTruthy();
+    expect(sw.fetch.mock.calls.length).toBe(3);
+    // the cached copy answered: no rejection escaped respondWith
+    await expect(Promise.all([])).resolves.toBeDefined();
+
+    // never cached before and offline → the failure propagates (the page sees a network error, not a bogus 200)
+    sw.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const pending: Promise<unknown>[] = [];
+    const ev2 = { request: { ...style, url: "https://tiles.openfreemap.org/planet" }, waitUntil: () => undefined, respondWith: (p: Promise<unknown>) => pending.push(p) };
+    for (const h of sw.handlers.get("fetch") ?? []) h(ev2);
+    await expect(Promise.all(pending)).rejects.toThrow("Failed to fetch");
   });
 });
 

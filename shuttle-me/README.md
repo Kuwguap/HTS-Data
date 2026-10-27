@@ -57,6 +57,7 @@ Useful scripts:
 | `pnpm vapid` | generate VAPID keys |
 | `pnpm seed:admin --username admin --name "Hostel Office" --pin 1234` | create/update the first admin |
 | `pnpm icons:build` | rebuild `/public/icons/*.webp` and the app icons from `assets/icon-sources/*.png` |
+| `pnpm vendor:maplibre` | copy MapLibre's web worker to `public/vendor/maplibre-gl-worker-<version>.mjs` (also runs inside `pnpm build`; a unit test fails when the committed copy drifts from the installed package) |
 
 ### Environment variables
 

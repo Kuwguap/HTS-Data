@@ -2,10 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Art, Button, Empty, Field, List, Pill, Row, Sheet, Skeleton, Switch, useToast } from "@/components/ui";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
 import type { PickupLocation, TripDirection } from "@/lib/db.types";
+import { preloadBasemap } from "@/lib/map/basemap";
 import type { PickerPlace } from "./LocationPicker";
 
 const LocationPicker = dynamic(() => import("./LocationPicker"), { ssr: false, loading: () => <Skeleton lines={1} height={220} widths={["100%"]} /> });
@@ -47,6 +48,9 @@ export function LocationsEditor({ locations, campusName, hostelName, destination
   const [toggling, setToggling] = useState<string | null>(null);
 
   const dirLabel = (d: TripDirection | null) => (d === "to_campus" ? `To ${campusName}` : d === "to_hostel" ? `To ${hostelName}` : "Both directions");
+
+  // The picker's basemap stack is ready by the time the admin taps ✏️.
+  useEffect(() => preloadBasemap(), []);
 
   // Every other saved place, with its name, drawn on the picker map for context.
   const editingId = editing !== null && editing !== "new" ? editing.id : null;

@@ -6,9 +6,10 @@
  *  - Cache-first only for hashed Next assets (/_next/static/*), app icons
  *    (/icons/*), the vendored MapLibre worker (/vendor/*, versioned file name) and
  *    basemap data, bounded to TILE_LIMIT entries: OpenFreeMap vector
- *    tiles / glyphs / sprites (tiles.openfreemap.org, but not its style and tilejson
- *    documents, which name the current tile set) and raster tiles from
+ *    tiles / glyphs / sprites (tiles.openfreemap.org) and raster tiles from
  *    basemaps.cartocdn.com (keyed CARTO) or server.arcgisonline.com (Esri fallback).
+ *    OpenFreeMap's style and tilejson documents name the current tile set, so they
+ *    are network-first with the last copy as the offline fallback.
  *    Raster tile layers must be created with crossOrigin: true, otherwise their
  *    responses are opaque and skipped.
  *  - The unversioned META_CACHE holds the VAPID public key the page posts after
@@ -136,10 +137,13 @@ function classifyRequest(url, mode, origin, method) {
   if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0 || u.pathname.indexOf("/vendor/") === 0)) return "static";
   if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
   // OpenFreeMap vector basemap: dated tile sets, glyphs, sprites and the shaded-relief
-  // raster never change under their URL → bounded cache. The style and the tilejson
-  // ("/styles/…", "/planet") point at the current tile set and must stay network-only.
+  // raster never change under their URL → bounded cache-first. The style and the
+  // tilejson ("/styles/…", "/planet") point at the current tile set, so they are
+  // network-first — with the last copy as the offline fallback so cached tiles still draw.
   if (/(^|\.)tiles\.openfreemap\.org$/.test(u.hostname)) {
-    return /^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname) ? "tile" : "passthrough";
+    if (/^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname)) return "tile";
+    if (/^\/(styles\/|planet$)/.test(u.pathname)) return "doc";
+    return "passthrough";
   }
   if (mode === "navigate") return "navigate";
   return "passthrough";
@@ -247,6 +251,30 @@ function cacheFirst(cacheName, request, limit) {
   );
 }
 
+// Network first; the last good copy answers when the network fails (small documents only).
+function networkFirst(cacheName, request) {
+  return fetch(request)
+    .then((res) => {
+      if (res && res.ok && res.type !== "opaque") {
+        const copy = res.clone();
+        caches
+          .open(cacheName)
+          .then((cache) => cache.put(request, copy))
+          .catch(() => undefined);
+      }
+      return res;
+    })
+    .catch((err) =>
+      caches
+        .open(cacheName)
+        .then((cache) => cache.match(request))
+        .then((hit) => {
+          if (hit) return hit;
+          throw err;
+        }),
+    );
+}
+
 function offlineFallback() {
   return caches.match(OFFLINE_URL).then(
     (hit) =>
@@ -265,6 +293,8 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(cacheFirst(STATIC_CACHE, request, 0));
   } else if (kind === "tile") {
     event.respondWith(cacheFirst(TILE_CACHE, request, TILE_LIMIT));
+  } else if (kind === "doc") {
+    event.respondWith(networkFirst(STATIC_CACHE, request));
   } else if (kind === "navigate") {
     event.respondWith(fetch(request).catch(() => offlineFallback()));
   }

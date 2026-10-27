@@ -162,8 +162,13 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     let cancelled = false;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     void createBasemap(L, map, mq.matches, () => cancelled).then((basemap) => {
-      if (cancelled) basemap.remove();
-      else basemapRef.current = basemap;
+      if (cancelled) {
+        basemap.remove();
+        return;
+      }
+      basemapRef.current = basemap;
+      // The scheme may have changed while the chunk downloaded: apply the current one.
+      basemap.setDark(mq.matches);
     });
     const applyScheme = () => {
       basemapRef.current?.setDark(mq.matches);
@@ -186,7 +191,13 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
 
     // Leaflet measures the container on creation; fix up after layout settles.
     const t = window.setTimeout(() => map.invalidateSize(), 50);
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => map.invalidateSize()) : null;
+    // A collapsed (0×0, leaving the page) or detached container never needs a re-measure.
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) map.invalidateSize();
+          })
+        : null;
     ro?.observe(el);
 
     return () => {
@@ -334,7 +345,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       <div
         ref={containerRef}
         // touch-action none: Leaflet handles every gesture itself, so Safari must not try to scroll or double-tap-zoom the page.
-        style={{ position: "absolute", inset: 0, touchAction: "none", WebkitTapHighlightColor: "transparent" }}
+        style={{ position: "absolute", inset: 0, touchAction: "none", WebkitTapHighlightColor: "transparent", background: "var(--surface-3)" }}
         aria-label="Live shuttle map"
         role="application"
       />

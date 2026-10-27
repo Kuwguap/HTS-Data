@@ -170,15 +170,16 @@ export function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-export type RequestClass = "static" | "tile" | "navigate" | "passthrough";
+export type RequestClass = "static" | "tile" | "doc" | "navigate" | "passthrough";
 
 /**
  * Which caching strategy a request gets:
  * - `static`: cache-first (hashed Next assets, app icons, the versioned MapLibre worker under /vendor/)
  * - `tile`: cache-first with a bounded cache (raster tiles from basemaps.cartocdn.com —
  *   keyed CARTO — or the Esri fallback on server.arcgisonline.com; OpenFreeMap vector
- *   tiles, glyphs, sprites and shaded relief — but not its style / tilejson documents,
- *   which name the current tile set and stay network-only)
+ *   tiles, glyphs, sprites and shaded relief)
+ * - `doc`: network-first with the last copy as the offline fallback (OpenFreeMap's
+ *   style and tilejson documents, which name the current tile set)
  * - `navigate`: network-only with the /offline fallback
  * - `passthrough`: untouched (API, RSC, everything else)
  */
@@ -194,7 +195,9 @@ export function classifyRequest(url: string, mode: string, origin: string, metho
   if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0 || u.pathname.indexOf("/vendor/") === 0)) return "static";
   if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
   if (/(^|\.)tiles\.openfreemap\.org$/.test(u.hostname)) {
-    return /^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname) ? "tile" : "passthrough";
+    if (/^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname)) return "tile";
+    if (/^\/(styles\/|planet$)/.test(u.pathname)) return "doc";
+    return "passthrough";
   }
   if (mode === "navigate") return "navigate";
   return "passthrough";

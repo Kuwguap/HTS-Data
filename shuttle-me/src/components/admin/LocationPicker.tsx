@@ -89,7 +89,11 @@ export default function LocationPicker({ lat, lng, onChange, height = 220, label
         if (everything.length > 1) map.fitBounds(L.latLngBounds(everything), { padding: [28, 28], maxZoom: 17 });
       }, 50);
       // Last: the basemap (MapLibre loads on demand); a no-op when the sheet closed meanwhile.
-      basemapRef.current = await createBasemap(L, map, mq.matches, () => cancelled);
+      // The scheme may have changed while the chunk downloaded: apply the current one.
+      const basemap = await createBasemap(L, map, mq.matches, () => cancelled);
+      if (cancelled) return;
+      basemapRef.current = basemap;
+      basemap.setDark(mq.matches);
     })().catch((err: unknown) => setError(err instanceof Error ? err.message : "Map could not load"));
     return () => {
       cancelled = true;

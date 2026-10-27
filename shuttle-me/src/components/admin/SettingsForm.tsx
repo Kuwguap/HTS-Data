@@ -2,10 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Caption, Card, Field, List, Row, Sheet, Skeleton, Switch, useToast } from "@/components/ui";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
 import type { PickupLocation, Settings } from "@/lib/db.types";
+import { preloadBasemap } from "@/lib/map/basemap";
 import { formatFare } from "@/lib/time";
 import type { PickerPlace } from "./LocationPicker";
 
@@ -114,6 +115,9 @@ export function SettingsForm({ settings, drivers, locations }: Props) {
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   const farePesewas = Math.round(Number(form.fare_cedis || 0) * 100);
+
+  // The picker's basemap stack is ready by the time the admin opens a location sheet.
+  useEffect(() => preloadBasemap(), []);
 
   // The picker map shows every pickup point students can choose plus the other destination, each with its name.
   const otherPlace: Place | null = picking === "hostel" ? "campus" : picking === "campus" ? "hostel" : null;
