@@ -174,9 +174,11 @@ export type RequestClass = "static" | "tile" | "navigate" | "passthrough";
 
 /**
  * Which caching strategy a request gets:
- * - `static`: cache-first (hashed Next assets, app icons)
- * - `tile`: cache-first with a bounded cache (basemap tiles from
- *   basemaps.cartocdn.com — keyed CARTO — or the Esri fallback on server.arcgisonline.com)
+ * - `static`: cache-first (hashed Next assets, app icons, the versioned MapLibre worker under /vendor/)
+ * - `tile`: cache-first with a bounded cache (raster tiles from basemaps.cartocdn.com —
+ *   keyed CARTO — or the Esri fallback on server.arcgisonline.com; OpenFreeMap vector
+ *   tiles, glyphs, sprites and shaded relief — but not its style / tilejson documents,
+ *   which name the current tile set and stay network-only)
  * - `navigate`: network-only with the /offline fallback
  * - `passthrough`: untouched (API, RSC, everything else)
  */
@@ -189,8 +191,11 @@ export function classifyRequest(url: string, mode: string, origin: string, metho
     return "passthrough";
   }
   const sameOrigin = u.origin === origin.replace(/\/$/, "");
-  if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0)) return "static";
+  if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0 || u.pathname.indexOf("/vendor/") === 0)) return "static";
   if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
+  if (/(^|\.)tiles\.openfreemap\.org$/.test(u.hostname)) {
+    return /^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname) ? "tile" : "passthrough";
+  }
   if (mode === "navigate") return "navigate";
   return "passthrough";
 }

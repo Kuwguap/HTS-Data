@@ -19,12 +19,15 @@
     "seed:admin": "tsx scripts/seed-admin.ts",
     "seed:sql": "tsx scripts/seed-users-sql.ts",
     "bundle:sql": "tsx scripts/bundle-sql.ts",
-    "icons:build": "tsx scripts/build-icons.ts"
+    "icons:build": "tsx scripts/build-icons.ts",
+    "vendor:maplibre": "node scripts/vendor-maplibre-worker.mjs"
   },
   "dependencies": {
+    "@maplibre/maplibre-gl-leaflet": "0.1.4",
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.118.0",
     "leaflet": "1.9.4",
+    "maplibre-gl": "6.16.0",
     "next": "16.4.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",

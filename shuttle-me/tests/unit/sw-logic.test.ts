@@ -290,6 +290,29 @@ describe("public/sw.js mirrors sw-logic", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(sw.stores.get("ks-tiles-" + swVersion())?.size).toBe(1);
   });
+
+  it("fetch: OpenFreeMap vector tiles, glyphs and sprites are tiles; its style and tilejson stay network-only", async () => {
+    const origin = "https://shuttle.example.com";
+    const tile = "https://tiles.openfreemap.org/planet/20261025_080012_pt/14/8120/7887.pbf";
+    expect(classifyRequest(`${origin}/vendor/maplibre-gl-worker-6.16.0.mjs`, "cors", origin)).toBe("static");
+    expect(classifyRequest("https://evil.example.com/vendor/maplibre-gl-worker-6.16.0.mjs", "cors", origin)).toBe("passthrough");
+    expect(classifyRequest(tile, "cors", origin)).toBe("tile");
+    expect(classifyRequest("https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf", "cors", origin)).toBe("tile");
+    expect(classifyRequest("https://tiles.openfreemap.org/sprites/ofm_f384/ofm@2x.png", "cors", origin)).toBe("tile");
+    expect(classifyRequest("https://tiles.openfreemap.org/natural_earth/ne2sr/3/4/3.png", "cors", origin)).toBe("tile");
+    // The style and the tilejson name the current (dated) tile set: never served from cache.
+    expect(classifyRequest("https://tiles.openfreemap.org/styles/bright", "cors", origin)).toBe("passthrough");
+    expect(classifyRequest("https://tiles.openfreemap.org/planet", "cors", origin)).toBe("passthrough");
+    expect(classifyRequest("https://evil.example.com/tiles.openfreemap.org/planet/x/1/1/1.pbf", "cors", origin)).toBe("passthrough");
+
+    const sw = loadSw();
+    await sw.fire("fetch", { request: { url: tile, mode: "cors", method: "GET" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sw.stores.get("ks-tiles-" + swVersion())?.size).toBe(1);
+    const before = sw.fetch.mock.calls.length;
+    await sw.fire("fetch", { request: { url: "https://tiles.openfreemap.org/styles/bright", mode: "cors", method: "GET" } });
+    expect(sw.fetch.mock.calls.length).toBe(before);
+  });
 });
 
 function swVersion(): string {

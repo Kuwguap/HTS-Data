@@ -21,7 +21,7 @@ admin inside the app.
 | App | Next.js 16 (App Router, TypeScript), Tailwind 4, design tokens ported from the Krab mini app |
 | Backend | Supabase: Postgres (schema, RLS, SQL functions), Auth (username + PIN mapped to a synthetic email), Realtime (broadcast for GPS), `pg_cron` + `pg_net` as the minute ticker |
 | Push | Web Push (VAPID) via `web-push`, hand-written `public/sw.js` |
-| Map | Leaflet + CARTO raster tiles (Voyager light / dark_all dark, keyed: `NEXT_PUBLIC_MAP_TILE_URL` + `NEXT_PUBLIC_MAP_TILE_URL_DARK`, the layer follows the colour scheme). Without env it falls back to Esri World Street Map (no key, dark mode = CSS filter on the tile pane). A custom provider's tiles are network-only unless its host is added to `public/sw.js` |
+| Map | Leaflet for panning, markers, name chips and the trail; the basemap is a MapLibre GL vector style rendered inside the Leaflet map (`@maplibre/maplibre-gl-leaflet`, loaded on demand). Default style OpenFreeMap "bright" (`NEXT_PUBLIC_MAP_STYLE_URL`, no key): OpenStreetMap data with the names of real places around campus, crisp on retina, dark mode = CSS filter unless `NEXT_PUBLIC_MAP_STYLE_URL_DARK` is set. Without WebGL (or with the style switched off) the map falls back to CARTO raster tiles (Voyager / dark_all, keyed: `NEXT_PUBLIC_MAP_TILE_URL` + `NEXT_PUBLIC_MAP_TILE_URL_DARK`), else Esri World Street Map. A custom provider's tiles are network-only unless its host is added to `public/sw.js` |
 | Tests | Vitest (unit + SQL against a throwaway local Postgres 16), Playwright smoke |
 
 See `docs/` (if present), `supabase/README.md` (database + cron) and `src/lib/push/README.md` (push
@@ -69,7 +69,8 @@ Useful scripts:
 | `PIN_PEPPER` | server only | random 32+ chars; derives the Supabase password from a user's PIN. Changing it invalidates every PIN. |
 | `CRON_SECRET` | server only | bearer token `pg_cron`/cron-job.org must send to `/api/cron/tick` |
 | `NEXT_PUBLIC_APP_URL` | client | public URL, used in the install guide and push links |
-| `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_URL_DARK`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION`, `NEXT_PUBLIC_MAP_TILE_MAX_NATIVE_ZOOM` | client, optional | basemap templates (production: CARTO Voyager / dark_all with the hostel key, `{r}` = retina), attribution and the provider's deepest zoom (default 18 on cartocdn.com, else 19). Default Esri World Street Map; see `src/lib/map/tiles.ts` |
+| `NEXT_PUBLIC_MAP_STYLE_URL`, `NEXT_PUBLIC_MAP_STYLE_URL_DARK`, `NEXT_PUBLIC_MAP_STYLE_ATTRIBUTION` | client, optional | MapLibre style for the vector basemap (default `https://tiles.openfreemap.org/styles/bright`; `""`/`off` = raster only), an optional dark style, and its attribution. Any MapLibre style URL works (MapTiler, self-hosted…); see `src/lib/map/basemap.ts` |
+| `NEXT_PUBLIC_MAP_TILE_URL`, `NEXT_PUBLIC_MAP_TILE_URL_DARK`, `NEXT_PUBLIC_MAP_TILE_ATTRIBUTION`, `NEXT_PUBLIC_MAP_TILE_MAX_NATIVE_ZOOM` | client, optional | raster fallback templates (production: CARTO Voyager / dark_all with the hostel key, `{r}` = retina), attribution and the provider's deepest zoom (default 18 on cartocdn.com, else 19). Default Esri World Street Map; see `src/lib/map/tiles.ts` |
 | `ROUTER_BASE_URL` | server only, optional | OSRM-compatible router for the live map's road route and road-snapped trail (default `https://router.project-osrm.org`, the rate-limited public demo). Calls are cached, time-boxed and best-effort: the map draws straight lines when the router is unavailable. See `src/components/map/README.md` |
 | `NEXT_PUBLIC_BUILD_COMMIT` | set by `next.config.ts` | short `VERCEL_GIT_COMMIT_SHA` (or `dev`) baked into the bundle; `BuildRefresh` compares it with `/api/health` on every return to the foreground and reloads a stale installed app |
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveMaxNativeZoom, tileHost } from "@/lib/map/tiles";
+import { resolveMaxNativeZoom, resolveStyleUrl, tileHost } from "@/lib/map/tiles";
 
 const CARTO = "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png?key=abc";
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
@@ -24,5 +24,20 @@ describe("map tiles: maxNativeZoom", () => {
     expect(resolveMaxNativeZoom("abc", CARTO)).toBe(18);
     expect(resolveMaxNativeZoom("0", CARTO)).toBe(18);
     expect(resolveMaxNativeZoom("99", ESRI)).toBe(19);
+  });
+});
+
+describe("map tiles: vector style", () => {
+  it("defaults to OpenFreeMap bright when NEXT_PUBLIC_MAP_STYLE_URL is unset", () => {
+    expect(resolveStyleUrl(undefined)).toBe("https://tiles.openfreemap.org/styles/bright");
+  });
+
+  it("switches the vector basemap off for an empty or explicit off value", () => {
+    for (const v of ["", "  ", "off", "OFF", "none", "0", "false"]) expect(resolveStyleUrl(v)).toBeNull();
+  });
+
+  it("passes any other value through verbatim (trimmed)", () => {
+    expect(resolveStyleUrl(" https://tiles.openfreemap.org/styles/liberty ")).toBe("https://tiles.openfreemap.org/styles/liberty");
+    expect(resolveStyleUrl("https://api.maptiler.com/maps/streets-v2/style.json?key=k")).toBe("https://api.maptiler.com/maps/streets-v2/style.json?key=k");
   });
 });

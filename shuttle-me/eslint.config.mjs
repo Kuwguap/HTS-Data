@@ -11,6 +11,8 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "public/sw.js",
+    // vendored MapLibre worker (minified third-party code, see scripts/vendor-maplibre-worker.mjs)
+    "public/vendor/**",
     "node_modules/**",
     "playwright-report/**",
     "test-results/**",

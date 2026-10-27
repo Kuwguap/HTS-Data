@@ -37,6 +37,15 @@ const nextConfig: NextConfig = {
         source: "/icons/(.*)",
         headers: [{ key: "Cache-Control", value: "public, max-age=604800, immutable" }],
       },
+      {
+        // Vendored MapLibre worker (versioned file name, see scripts/vendor-maplibre-worker.mjs):
+        // a module worker needs a JavaScript MIME type.
+        source: "/vendor/(.*).mjs",
+        headers: [
+          { key: "Content-Type", value: "text/javascript; charset=utf-8" },
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
     ];
   },
 };

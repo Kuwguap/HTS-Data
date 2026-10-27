@@ -4,9 +4,13 @@
  *  - HTML, RSC payloads and API calls are NEVER cached (network only); a failed
  *    navigation falls back to the precached /offline page.
  *  - Cache-first only for hashed Next assets (/_next/static/*), app icons
- *    (/icons/*) and basemap tiles from basemaps.cartocdn.com (keyed CARTO) or
- *    server.arcgisonline.com (Esri fallback), bounded to TILE_LIMIT entries. Tile layers must be created with
- *    crossOrigin: true, otherwise their responses are opaque and skipped.
+ *    (/icons/*), the vendored MapLibre worker (/vendor/*, versioned file name) and
+ *    basemap data, bounded to TILE_LIMIT entries: OpenFreeMap vector
+ *    tiles / glyphs / sprites (tiles.openfreemap.org, but not its style and tilejson
+ *    documents, which name the current tile set) and raster tiles from
+ *    basemaps.cartocdn.com (keyed CARTO) or server.arcgisonline.com (Esri fallback).
+ *    Raster tile layers must be created with crossOrigin: true, otherwise their
+ *    responses are opaque and skipped.
  *  - The unversioned META_CACHE holds the VAPID public key the page posts after
  *    registration ({type:"VAPID_KEY", key}), so pushsubscriptionchange can
  *    re-subscribe even when the old subscription is gone (iOS).
@@ -16,7 +20,7 @@
  * Bump VERSION on every deploy that should drop old caches.
  */
 /* eslint-disable */
-const VERSION = "2026-10-27.2";
+const VERSION = "2026-10-27.3";
 const STATIC_CACHE = "ks-static-" + VERSION;
 const TILE_CACHE = "ks-tiles-" + VERSION;
 const META_CACHE = "ks-meta";
@@ -129,8 +133,14 @@ function classifyRequest(url, mode, origin, method) {
     return "passthrough";
   }
   const sameOrigin = u.origin === origin.replace(/\/$/, "");
-  if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0)) return "static";
+  if (sameOrigin && (u.pathname.indexOf("/_next/static/") === 0 || u.pathname.indexOf("/icons/") === 0 || u.pathname.indexOf("/vendor/") === 0)) return "static";
   if (/(^|\.)(server\.arcgisonline\.com|basemaps\.cartocdn\.com)$/.test(u.hostname)) return "tile";
+  // OpenFreeMap vector basemap: dated tile sets, glyphs, sprites and the shaded-relief
+  // raster never change under their URL → bounded cache. The style and the tilejson
+  // ("/styles/…", "/planet") point at the current tile set and must stay network-only.
+  if (/(^|\.)tiles\.openfreemap\.org$/.test(u.hostname)) {
+    return /^\/(planet\/[^/]+\/|fonts\/|sprites\/|natural_earth\/)/.test(u.pathname) ? "tile" : "passthrough";
+  }
   if (mode === "navigate") return "navigate";
   return "passthrough";
 }

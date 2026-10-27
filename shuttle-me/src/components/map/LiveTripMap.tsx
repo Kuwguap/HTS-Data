@@ -8,9 +8,10 @@ import type { BookingStatus, PickupLocation, Trip } from "@/lib/db.types";
 import { estimateEtaSeconds, formatDistance, formatEta, haversineM, type LatLng } from "@/lib/geo";
 import { useTripLocation } from "@/hooks/useTripLocation";
 import { useTripRoute, viaKeyOf } from "@/hooks/useTripRoute";
+import { createBasemap, type Basemap } from "@/lib/map/basemap";
 import { chipOptions, flagIcon, pinIcon } from "@/lib/map/icons";
 import { placeLabels } from "@/lib/map/labels";
-import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
+import { TILE_MAX_ZOOM } from "@/lib/map/tiles";
 
 export type LiveTripMapProps = {
   tripId: string;
@@ -93,7 +94,7 @@ const roundBtn: React.CSSProperties = {
 export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPickupLocationId, myBookingStatus, settings, destination, compact }: LiveTripMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const tileRef = useRef<L.TileLayer | null>(null);
+  const basemapRef = useRef<Basemap | null>(null);
   const busRef = useRef<L.Marker | null>(null);
   const trailRef = useRef<L.Polyline | null>(null);
   const trailCasingRef = useRef<L.Polyline | null>(null);
@@ -149,33 +150,27 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
       attributionControl: true,
       center: FALLBACK_CENTER,
       zoom: 14,
+      minZoom: 2,
+      maxZoom: TILE_MAX_ZOOM,
       tap: false,
     } as L.MapOptions);
     map.attributionControl.setPrefix(false);
     mapRef.current = map;
 
-    // Tiles: with a dark provider URL the LAYER follows prefers-color-scheme (swapped on
-    // change); otherwise one layer for both schemes and dark mode is a CSS filter on the
-    // tile pane (globals.css). The trail colour re-reads --accent on every change.
+    // Basemap (vector style with real place names, raster fallback — src/lib/map/basemap.ts)
+    // follows prefers-color-scheme; the trail colour re-reads --accent on every change.
+    let cancelled = false;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    tileRef.current = L.tileLayer(tileUrlFor(HAS_DARK_TILES && mq.matches), TILE_LAYER_OPTIONS).addTo(map);
+    void createBasemap(L, map, mq.matches, () => cancelled).then((basemap) => {
+      if (cancelled) basemap.remove();
+      else basemapRef.current = basemap;
+    });
     const applyScheme = () => {
-      const dark = mq.matches;
-      if (HAS_DARK_TILES) {
-        const url = tileUrlFor(dark);
-        const current = tileRef.current as (L.TileLayer & { _url?: string }) | null;
-        if (current && current._url !== url) {
-          current.remove();
-          tileRef.current = L.tileLayer(url, TILE_LAYER_OPTIONS).addTo(map);
-        }
-      } else {
-        el.classList.toggle(MAP_DARK_CLASS, dark);
-      }
+      basemapRef.current?.setDark(mq.matches);
       const accent = accentColor();
       trailRef.current?.setStyle({ color: accent });
       routeRef.current?.setStyle({ color: accent });
     };
-    applyScheme();
     mq.addEventListener("change", applyScheme);
 
     pinsRef.current = L.layerGroup().addTo(map);
@@ -195,12 +190,14 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     ro?.observe(el);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(t);
       ro?.disconnect();
       mq.removeEventListener("change", applyScheme);
+      basemapRef.current?.remove();
+      basemapRef.current = null;
       map.remove();
       mapRef.current = null;
-      tileRef.current = null;
       busRef.current = null;
       trailRef.current = null;
       trailCasingRef.current = null;

@@ -4,9 +4,10 @@ import "leaflet/dist/leaflet.css";
 import type * as Leaflet from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
+import { createBasemap, type Basemap } from "@/lib/map/basemap";
 import { chipOptions, flagIcon, pinIcon } from "@/lib/map/icons";
 import { placeLabels, type LabelItem } from "@/lib/map/labels";
-import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
+import { TILE_MAX_ZOOM } from "@/lib/map/tiles";
 
 /** A saved place drawn for context (not editable here): a pickup point 📍 or a hostel/campus destination 🏁. */
 export type PickerPlace = { id?: string; name: string; lat: number; lng: number; kind?: "pickup" | "destination" };
@@ -28,7 +29,8 @@ const DEFAULT_LABEL = "New pickup point";
 const NO_PLACES: PickerPlace[] = [];
 
 /**
- * Small Leaflet map (street tiles; dark layer or CSS-darkened, see src/lib/map/tiles.ts) to place a pickup point: tap to move the pin,
+ * Small Leaflet map (vector basemap with real place names, or raster tiles as the
+ * fallback — see src/lib/map/basemap.ts) to place a pickup point: tap to move the pin,
  * or use the phone's GPS. Every other saved place is drawn with its name, like on the
  * live map. Loaded client-side only — import it with next/dynamic ({ ssr: false }).
  */
@@ -38,7 +40,7 @@ export default function LocationPicker({ lat, lng, onChange, height = 220, label
   const markerRef = useRef<Leaflet.Marker | null>(null);
   const placesRef = useRef<Leaflet.LayerGroup | null>(null);
   const leafletRef = useRef<typeof Leaflet | null>(null);
-  const tileRef = useRef<Leaflet.TileLayer | null>(null);
+  const basemapRef = useRef<Basemap | null>(null);
   const onChangeRef = useRef(onChange);
   const labelRef = useRef(label);
   const [locating, setLocating] = useState(false);
@@ -63,24 +65,11 @@ export default function LocationPicker({ lat, lng, onChange, height = 220, label
       const el = containerRef.current;
       const hasPin = lat != null && lng != null;
       const start: [number, number] = hasPin ? [lat, lng] : DEFAULT_CENTER;
-      const map = L.map(el, { center: start, zoom: 15, zoomControl: true, attributionControl: true });
-      // Same scheme handling as LiveTripMap: swap the tile layer when the provider has dark
-      // tiles, otherwise one layer + the CSS filter on the tile pane (globals.css).
+      const map = L.map(el, { center: start, zoom: 15, minZoom: 2, maxZoom: TILE_MAX_ZOOM, zoomControl: true, attributionControl: true });
+      mapRef.current = map;
+      // The basemap follows prefers-color-scheme (see src/lib/map/basemap.ts).
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
-      tileRef.current = L.tileLayer(tileUrlFor(HAS_DARK_TILES && mq.matches), TILE_LAYER_OPTIONS).addTo(map);
-      const applyScheme = () => {
-        if (HAS_DARK_TILES) {
-          const url = tileUrlFor(mq.matches);
-          const current = tileRef.current as (Leaflet.TileLayer & { _url?: string }) | null;
-          if (current && current._url !== url) {
-            current.remove();
-            tileRef.current = L.tileLayer(url, TILE_LAYER_OPTIONS).addTo(map);
-          }
-        } else {
-          el.classList.toggle(MAP_DARK_CLASS, mq.matches);
-        }
-      };
-      applyScheme();
+      const applyScheme = () => basemapRef.current?.setDark(mq.matches);
       mq.addEventListener("change", applyScheme);
       // Leaflet's Map.remove() fires "unload" (not "remove"), so detach in the effect cleanup below.
       unsubScheme = () => mq.removeEventListener("change", applyScheme);
@@ -91,7 +80,6 @@ export default function LocationPicker({ lat, lng, onChange, height = 220, label
         onChangeRef.current(next[0], next[1]);
       });
       map.on("zoomend", () => setZoomTick((n) => n + 1));
-      mapRef.current = map;
       drawPlaces(L, map, placesRef.current, places, hasPin ? { lat, lng } : null);
       // Leaflet measures the container on creation; fix up after layout settles, then open
       // the view wide enough to show every saved place together with the pin.
@@ -100,17 +88,20 @@ export default function LocationPicker({ lat, lng, onChange, height = 220, label
         map.invalidateSize();
         if (everything.length > 1) map.fitBounds(L.latLngBounds(everything), { padding: [28, 28], maxZoom: 17 });
       }, 50);
+      // Last: the basemap (MapLibre loads on demand); a no-op when the sheet closed meanwhile.
+      basemapRef.current = await createBasemap(L, map, mq.matches, () => cancelled);
     })().catch((err: unknown) => setError(err instanceof Error ? err.message : "Map could not load"));
     return () => {
       cancelled = true;
       if (fitTimer != null) window.clearTimeout(fitTimer);
       unsubScheme?.();
       unsubScheme = null;
+      basemapRef.current?.remove();
+      basemapRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
       markerRef.current = null;
       placesRef.current = null;
-      tileRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; prop changes are applied by the effects below
   }, []);
