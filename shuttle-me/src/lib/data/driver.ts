@@ -241,8 +241,8 @@ export const listPendingPickupRequests = cache(async (): Promise<RequestWithRide
 /** Requests accepted today (any driver), newest first. */
 export const listAcceptedRequestsToday = cache(async (): Promise<RequestWithRider[]> => {
   const admin = createAdminClient();
-  const { today } = await driverDateRange();
-  const settings = await getSettings();
+  // Both are per-request cached (one settings select between them); awaited together so neither waits on the other.
+  const [{ today }, settings] = await Promise.all([driverDateRange(), getSettings()]);
   // Start of the local day in UTC.
   const start = new Date(`${today}T00:00:00Z`);
   const offsetGuess = new Date(start.getTime() - 24 * 3600_000); // generous lower bound; filtered precisely below

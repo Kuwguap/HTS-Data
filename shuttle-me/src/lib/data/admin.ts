@@ -267,26 +267,28 @@ export type TripAdminData = {
 
 export async function getTripAdmin(id: string): Promise<TripAdminData | null> {
   const admin = createAdminClient();
-  const trip = await safe(
-    "trip",
-    async () => {
-      const { data, error } = await admin.from("trips").select("*").eq("id", id).maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-    null as Trip | null,
-  );
+  // The trip and its bookings both key off `id` alone: fetch them in one round trip.
+  const [trip, bookings] = await Promise.all([
+    safe(
+      "trip",
+      async () => {
+        const { data, error } = await admin.from("trips").select("*").eq("id", id).maybeSingle();
+        if (error) throw error;
+        return data;
+      },
+      null as Trip | null,
+    ),
+    safe(
+      "trip bookings",
+      async () => {
+        const { data, error } = await admin.from("bookings").select("*").eq("trip_id", id).order("created_at");
+        if (error) throw error;
+        return data ?? [];
+      },
+      [] as Booking[],
+    ),
+  ]);
   if (!trip) return null;
-
-  const bookings = await safe(
-    "trip bookings",
-    async () => {
-      const { data, error } = await admin.from("bookings").select("*").eq("trip_id", id).order("created_at");
-      if (error) throw error;
-      return data ?? [];
-    },
-    [] as Booking[],
-  );
 
   const riderIds = [...new Set(bookings.map((b) => b.user_id))];
   const pickupIds = [...new Set(bookings.map((b) => b.pickup_location_id).filter((x): x is string => Boolean(x)))];
@@ -471,24 +473,28 @@ export function defaultReportRange(now = new Date(), timeZone?: string): { from:
 }
 
 export async function reports(opts: { from: string; to: string }, now = new Date()): Promise<Report> {
-  const settings = await getSettings();
   const admin = createAdminClient();
-  const trips = await safe(
-    "report trips",
-    async () => {
-      const { data, error } = await admin
-        .from("trips")
-        .select("*")
-        .gte("service_date", opts.from)
-        .lte("service_date", opts.to)
-        .neq("status", "cancelled")
-        .order("departure_at")
-        .limit(2000);
-      if (error) throw error;
-      return data ?? [];
-    },
-    [] as Trip[],
-  );
+  // Settings, the trips in range and the pickup names do not depend on each other.
+  const [settings, trips, locations] = await Promise.all([
+    getSettings(),
+    safe(
+      "report trips",
+      async () => {
+        const { data, error } = await admin
+          .from("trips")
+          .select("*")
+          .gte("service_date", opts.from)
+          .lte("service_date", opts.to)
+          .neq("status", "cancelled")
+          .order("departure_at")
+          .limit(2000);
+        if (error) throw error;
+        return data ?? [];
+      },
+      [] as Trip[],
+    ),
+    listLocations(),
+  ]);
   const tripIds = trips.map((t) => t.id);
   const bookings = tripIds.length
     ? await safe(
@@ -505,7 +511,6 @@ export async function reports(opts: { from: string; to: string }, now = new Date
         [] as ReportBooking[],
       )
     : [];
-  const locations = await listLocations();
   const locName = new Map(locations.map((l) => [l.id, l.name]));
   return buildReport({ from: opts.from, to: opts.to, timeZone: settings.timezone, now }, trips, bookings, locName);
 }

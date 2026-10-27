@@ -16,6 +16,7 @@ export { Pill, type PillProps, type PillTone } from "./Pill";
 export { Row, Chevron, type RowProps } from "./Row";
 export { SegmentedControl, type SegmentOption, type SegmentedControlProps } from "./SegmentedControl";
 export { Sheet, type SheetProps } from "./Sheet";
+export { PageSkeleton } from "./PageSkeleton";
 export { Skeleton, type SkeletonProps } from "./Skeleton";
 export { Spinner, type SpinnerProps } from "./Spinner";
 export { StatTile, type StatTileProps } from "./StatTile";

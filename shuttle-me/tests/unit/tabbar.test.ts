@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeTabHref } from "@/components/layout/TabBar";
+import { activeTabHref, highlightedTabHref } from "@/components/layout/TabBar";
 
 const ADMIN_TABS = [
   { href: "/admin" },
@@ -33,5 +33,28 @@ describe("activeTabHref", () => {
   it("accepts plain href strings and returns null when nothing matches", () => {
     expect(activeTabHref("/app/inbox/123", ["/app", "/app/live", "/app/inbox", "/app/settings"])).toBe("/app/inbox");
     expect(activeTabHref("/login", ["/app", "/app/live"])).toBeNull();
+  });
+});
+
+describe("highlightedTabHref", () => {
+  const STUDENT_TABS = ["/app", "/app/live", "/app/inbox", "/app/settings"];
+
+  it("falls back to the route match when nothing was tapped", () => {
+    expect(highlightedTabHref("/app/live", STUDENT_TABS, null)).toBe("/app/live");
+  });
+
+  it("highlights the tapped tab optimistically while the pathname has not moved yet", () => {
+    expect(highlightedTabHref("/app", STUDENT_TABS, { href: "/app/inbox", pathname: "/app" })).toBe("/app/inbox");
+  });
+
+  it("drops a stale tap once the pathname changed, without an explicit reset", () => {
+    const tap = { href: "/app/inbox", pathname: "/app" };
+    expect(highlightedTabHref("/app/inbox", STUDENT_TABS, tap)).toBe("/app/inbox");
+    // The user went somewhere else afterwards (back button, deep link): the route wins.
+    expect(highlightedTabHref("/app/settings", STUDENT_TABS, tap)).toBe("/app/settings");
+  });
+
+  it("keeps the More tab's extra matches when the tap is stale", () => {
+    expect(highlightedTabHref("/admin/trips", ADMIN_TABS, { href: "/admin/users", pathname: "/admin" })).toBe("/admin/more");
   });
 });

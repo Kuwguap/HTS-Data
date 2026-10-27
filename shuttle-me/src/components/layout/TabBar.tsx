@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import type { ArtKey } from "@/lib/constants";
 import { Art } from "@/components/ui/Art";
 import { Badge } from "@/components/ui/Badge";
@@ -59,6 +60,38 @@ export function activeTabHref(pathname: string, tabs: ReadonlyArray<string | Pic
   return best;
 }
 
+/** The tab the user just tapped, remembered together with the pathname it was tapped on. */
+export type TabTap = { href: string; pathname: string };
+
+/**
+ * Which tab to highlight: a tab tapped on this very pathname wins (optimistic, so
+ * the highlight moves the instant the finger lands), and the moment `usePathname()`
+ * reports a new route the tap is stale by construction and the real match applies.
+ * No effect or reset is needed: a tap recorded on another pathname is ignored.
+ */
+export function highlightedTabHref(pathname: string, tabs: ReadonlyArray<string | Pick<TabItem, "href" | "match">>, tap: TabTap | null): string | null {
+  if (tap && tap.pathname === pathname) return tap.href;
+  return activeTabHref(pathname, tabs);
+}
+
+/**
+ * Inside each Link: icon, label and badge. `useLinkStatus` (must be a descendant of
+ * the Link) pulses the icon while the navigation is still pending, i.e. when the
+ * loading boundary was not prefetched yet, which is common on a slow network.
+ */
+function TabFace({ item }: { item: TabItem }) {
+  const { pending } = useLinkStatus();
+  return (
+    <>
+      <span className={pending ? "k-tab-icon k-tab-icon--pending" : "k-tab-icon"} aria-hidden="true">
+        <Art k={item.art} size={24} />
+      </span>
+      <span aria-hidden="true">{item.label}</span>
+      <Badge count={item.badge} decorative />
+    </>
+  );
+}
+
 /**
  * Fixed bottom tab bar: art icon over a tiny uppercase label, red badges.
  *
@@ -73,7 +106,8 @@ export function activeTabHref(pathname: string, tabs: ReadonlyArray<string | Pic
  */
 export function TabBar({ items, className }: TabBarProps) {
   const pathname = usePathname() ?? "";
-  const active = activeTabHref(pathname, items);
+  const [tap, setTap] = useState<TabTap | null>(null);
+  const active = highlightedTabHref(pathname, items, tap);
   return (
     <nav className={["k-tabbar", className ?? ""].join(" ").trim()} aria-label="Main">
       <div className="k-tabbar-row">
@@ -84,12 +118,9 @@ export function TabBar({ items, className }: TabBarProps) {
             className="k-tab"
             aria-current={item.href === active ? "page" : undefined}
             aria-label={tabAccessibleName(item)}
+            onClick={() => setTap({ href: item.href, pathname })}
           >
-            <span className="k-tab-icon" aria-hidden="true">
-              <Art k={item.art} size={24} />
-            </span>
-            <span aria-hidden="true">{item.label}</span>
-            <Badge count={item.badge} decorative />
+            <TabFace item={item} />
           </Link>
         ))}
       </div>

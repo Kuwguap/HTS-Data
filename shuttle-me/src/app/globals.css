@@ -568,6 +568,18 @@ a {
     box-sizing: border-box;
   }
 
+  /* Every k-* tap target: no 300ms click delay / double-tap zoom on iOS. The base
+     layer sets this on <button> only; rows, tiles, hero cards, hit areas and
+     pill buttons are often rendered as <a> (next/link). */
+  .k-btn,
+  .k-hit,
+  .k-row--press,
+  .k-tile,
+  .k-hero,
+  .k-filter {
+    touch-action: manipulation;
+  }
+
   /* ---------- buttons ---------- */
   .k-btn {
     --btn-bg: var(--accent);
@@ -1135,6 +1147,15 @@ a {
     letter-spacing: 0.02em;
     text-transform: uppercase;
     position: relative;
+    /* Links get no tap-delay removal from the base layer (only <button> does); the
+       grey tap highlight is already off via html. Press feedback mirrors .k-btn
+       (0.97 / 120ms), a touch snappier for a tab. */
+    touch-action: manipulation;
+    transition: transform 80ms ease;
+  }
+
+  .k-tab:active {
+    transform: scale(0.94);
   }
 
   .k-tab-icon {
@@ -1145,6 +1166,12 @@ a {
     align-items: center;
     justify-content: center;
     transition: background 160ms ease;
+  }
+
+  /* Navigation still pending (loading boundary not prefetched yet): pulse the icon.
+     Starts after 120ms so a prefetched, instant transition never flashes. */
+  .k-tab-icon--pending {
+    animation: k-tab-pending 900ms ease-in-out 120ms infinite;
   }
 
   .k-tab[aria-current="page"] {
@@ -1411,6 +1438,10 @@ a {
 @keyframes k-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+@keyframes k-tab-pending {
+  50% { opacity: 0.4; }
 }
 
 @keyframes k-ring {

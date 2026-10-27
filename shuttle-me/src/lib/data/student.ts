@@ -108,12 +108,15 @@ export async function listMyBookings(userId: string, opts: { past?: boolean; lim
     .limit(500);
   if (!bookings || bookings.length === 0) return [];
   const tripIds = [...new Set(bookings.map((b) => b.trip_id))];
-  const { data: trips } = await admin.from("trips").select("*").in("id", tripIds);
+  // Trips and pickup points both hang off the bookings only: one round trip, not two.
+  const [{ data: trips }, locations] = await Promise.all([
+    admin.from("trips").select("*").in("id", tripIds),
+    loadPickupLocationsById(
+      admin,
+      bookings.map((b) => b.pickup_location_id),
+    ),
+  ]);
   const tripById = new Map((trips ?? []).map((t) => [t.id, t]));
-  const locations = await loadPickupLocationsById(
-    admin,
-    bookings.map((b) => b.pickup_location_id),
-  );
   const nowMs = Date.now();
   const rows: BookingWithTrip[] = [];
   for (const b of bookings) {
@@ -134,16 +137,17 @@ export async function listMyBookings(userId: string, opts: { past?: boolean; lim
 
 async function attachRequestRelations(admin: Admin, requests: PickupRequest[]): Promise<PickupRequestWithPlace[]> {
   if (requests.length === 0) return [];
-  const locations = await loadPickupLocationsById(
-    admin,
-    requests.map((r) => r.pickup_location_id),
-  );
   const tripIds = [...new Set(requests.map((r) => r.trip_id).filter((id): id is string => Boolean(id)))];
+  // Pickup points and trips are independent lookups: run them side by side.
+  const [locations, { data: trips }] = await Promise.all([
+    loadPickupLocationsById(
+      admin,
+      requests.map((r) => r.pickup_location_id),
+    ),
+    tripIds.length > 0 ? admin.from("trips").select("*").in("id", tripIds) : Promise.resolve({ data: [] as Trip[] }),
+  ]);
   const tripById = new Map<string, Trip>();
-  if (tripIds.length > 0) {
-    const { data: trips } = await admin.from("trips").select("*").in("id", tripIds);
-    for (const t of trips ?? []) tripById.set(t.id, t);
-  }
+  for (const t of trips ?? []) tripById.set(t.id, t);
   return requests.map((r) => ({
     ...r,
     pickup_location: r.pickup_location_id ? (locations.get(r.pickup_location_id) ?? null) : null,
