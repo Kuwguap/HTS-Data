@@ -91,7 +91,7 @@ export function Row({
           {children}
         </span>
       )}
-      {trailing}
+      {trailing != null && trailing !== false ? <span className="k-row-trailing">{trailing}</span> : null}
       {showChevron ? <Chevron /> : null}
     </>
   );

@@ -490,6 +490,23 @@ a {
     min-width: 0;
   }
 
+  /* Right-hand slot (pill, switch, small button…): never steals width from the text column.
+     Buttons are full-width by default (.k-btn), which squeezed the title/subtitle to a few
+     characters on phones; inside a row they size to their content. */
+  .k-row-trailing {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+    margin-left: auto;
+    max-width: 55%;
+  }
+
+  .k-row-trailing .k-btn {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
   .k-row-title {
     font-size: var(--fs-lg);
     font-weight: 400;
