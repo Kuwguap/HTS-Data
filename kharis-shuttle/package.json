@@ -17,6 +17,8 @@
     "db:reset": "bash scripts/local-pg.sh reset",
     "vapid": "tsx scripts/gen-vapid.ts",
     "seed:admin": "tsx scripts/seed-admin.ts",
+    "seed:sql": "tsx scripts/seed-users-sql.ts",
+    "bundle:sql": "tsx scripts/bundle-sql.ts",
     "icons:build": "tsx scripts/build-icons.ts"
   },
   "dependencies": {
