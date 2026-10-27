@@ -33,3 +33,6 @@ assets/icon-sources/*.png
 
 # deploy bundles with hashed credentials (generated at handover)
 .deploy/
+
+# vercel cli link
+.vercel/
