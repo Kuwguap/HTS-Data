@@ -3,7 +3,7 @@ import { requireRole } from "@/lib/auth/require";
 import { requireTripAccess } from "@/lib/data/driver";
 import { getSettings } from "@/lib/data/settings";
 import type { Booking, CancelBookingResult } from "@/lib/db.types";
-import { notifyAndDrain } from "@/lib/notify/enqueue";
+import { notifyAndDrain, promotedDedupePrefix } from "@/lib/notify/enqueue";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { formatTime } from "@/lib/time";
 import { riderStatusSchema } from "@/lib/validation/driver";
@@ -12,8 +12,9 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/driver/trips/[id]/bookings/[bookingId] { status: confirmed | boarded | no_show | cancelled }
- * cancelled → cancel_booking(me, id, 'driver') and notify the promoted rider (if any);
- * anything else → set_booking_status. Responds { booking }.
+ * cancelled → cancel_booking(me, id, 'driver') and notify the promoted rider (if any),
+ * a no-op when the booking is already cancelled; anything else → set_booking_status.
+ * Responds { booking, promoted }.
  */
 export const POST = withHandler<RouteCtx<{ id: string; bookingId: string }>>(async (request, { params }) => {
   const { id, bookingId } = await params;
@@ -22,10 +23,14 @@ export const POST = withHandler<RouteCtx<{ id: string; bookingId: string }>>(asy
   const { trip } = await requireTripAccess(id, profile);
 
   const admin = createAdminClient();
-  const { data: existing } = await admin.from("bookings").select("id, trip_id, user_id").eq("id", bookingId).maybeSingle();
+  const { data: existing } = await admin.from("bookings").select("*").eq("id", bookingId).maybeSingle();
   if (!existing || existing.trip_id !== id) throw new ApiError(404, "NOT_FOUND", "Booking not found on this trip.");
 
   if (input.status === "cancelled") {
+    // Already cancelled (API-only double tap / retry): nothing to free, nobody to promote,
+    // and the rider must not get a second booking_cancelled push with a fresh stamp.
+    if (existing.status === "cancelled") return ok({ booking: existing, promoted: null });
+
     const { data, error } = await admin.rpc("cancel_booking", { p_user_id: user.id, p_booking_id: bookingId, p_by: "driver" });
     if (error) throw fromPostgresError(error);
     const result = data as unknown as CancelBookingResult | null;
@@ -57,7 +62,7 @@ export const POST = withHandler<RouteCtx<{ id: string; bookingId: string }>>(asy
         kind: "booking_promoted",
         vars: { ...base, pickup: pickup ?? "your pickup point" },
         url: `/app/trips/${trip.id}`,
-        dedupePrefix: `booking_promoted:${promoted.id}`,
+        dedupePrefix: promotedDedupePrefix(promoted),
         urgency: "high",
         collapseTag: `trip:${trip.id}`,
       });
@@ -100,7 +105,7 @@ export const POST = withHandler<RouteCtx<{ id: string; bookingId: string }>>(asy
           kind: "booking_promoted",
           vars: { ...base, pickup: (b.pickup_location_id && names.get(b.pickup_location_id)) || "your pickup point" },
           url: `/app/trips/${trip.id}`,
-          dedupePrefix: `booking_promoted:${b.id}`,
+          dedupePrefix: promotedDedupePrefix(b),
           urgency: "high",
           collapseTag: `trip:${trip.id}`,
         });

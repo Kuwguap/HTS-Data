@@ -199,7 +199,7 @@ export function SettingsForm({ settings, drivers }: Props) {
       </Card>
 
       <Caption>Tracking</Caption>
-      <Card>{numberField("location_stale_seconds", "Bus counts as stale after (seconds)", { min: 15, max: 3600, help: "No GPS fix for this long hides the live marker." })}</Card>
+      <Card>{numberField("location_stale_seconds", "Bus counts as stale after (seconds)", { min: 45, max: 3600, help: "No GPS fix for this long hides the live marker. At least 45 — the bus position refreshes every 15 s." })}</Card>
 
       <Caption>Access</Caption>
       <Card>

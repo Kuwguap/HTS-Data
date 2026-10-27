@@ -19,7 +19,10 @@ export const dynamic = "force-dynamic";
  * Every attempt is counted atomically BEFORE Supabase Auth is asked, so a burst of
  * parallel guesses gets at most LOGIN_MAX_FAILURES real checks per lockout window;
  * once the window is spent the response is 423 LOCKED without touching Auth.
- * A correct PIN clears the counter. A Supabase outage or rate limit surfaces as 503.
+ * Every attempt draws on that budget, including one that ends in a 503 because
+ * Supabase Auth was busy or unreachable — which is why the lockout message says
+ * "sign-in attempts", not "wrong attempts". A correct PIN clears the counter.
+ * A Supabase outage or rate limit surfaces as 503.
  */
 export const POST = withHandler(async (request) => {
   const input = await parseBody(request, loginSchema);

@@ -13,7 +13,10 @@ const WRONG_CURRENT_PIN = "Your current PIN is not right.";
  *
  * Lockout: checking the current PIN draws on the same 5-per-15-min budget as
  * sign-in (reserveLoginAttempt → verifyPin → clearLoginFailures), so a signed-in
- * device cannot brute-force the PIN here instead of at /login.
+ * device cannot brute-force the PIN here instead of at /login. Every attempt counts,
+ * including one that ends in a 503 because Supabase Auth was busy or unreachable
+ * (the attempt is reserved before Auth is asked); only a verified current PIN
+ * clears the counter.
  *
  * Session: setPin() uses auth.admin.updateUserById({ password }) and GoTrue deletes
  * EVERY session of the user on an admin password update, so right after a successful

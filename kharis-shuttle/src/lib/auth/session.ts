@@ -104,16 +104,25 @@ export async function setPin(admin: Admin, userId: string, username: string, pin
   if (error) throw new ApiError(500, "INTERNAL", "Could not update the PIN. Try again.");
 }
 
-/** The 423 LOCKED error for a lock that is still in force, or null when not locked. */
-export function lockoutError(lockedUntil: string | null | undefined): ApiError | null {
+/**
+ * The 423 LOCKED error for a lock that is still in force, or null when not locked.
+ * `asOf` is the database's idea of "now" (login_attempts.updated_at, written with
+ * now() on every record_login_failure call) so the lock is judged on the same clock
+ * that set it; without it, or when it does not parse, the Node clock is used.
+ * The wording says "sign-in attempts", not "wrong attempts": every reservation counts
+ * toward the budget, including attempts that ended in a 503 from Supabase Auth.
+ */
+export function lockoutError(lockedUntil: string | null | undefined, asOf?: string | null): ApiError | null {
   if (!lockedUntil) return null;
-  const remainingMs = new Date(lockedUntil).getTime() - Date.now();
+  const asOfMs = asOf ? new Date(asOf).getTime() : Number.NaN;
+  const nowMs = Number.isFinite(asOfMs) ? asOfMs : Date.now();
+  const remainingMs = new Date(lockedUntil).getTime() - nowMs;
   if (!(remainingMs > 0)) return null;
   const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
   return new ApiError(
     423,
     "LOCKED",
-    `Too many wrong attempts. Try again in ${minutes} min or ask the hostel office to reset your PIN.`,
+    `Too many sign-in attempts. Try again in ${minutes} min or ask the hostel office to reset your PIN.`,
   );
 }
 
@@ -124,8 +133,11 @@ export function lockoutError(lockedUntil: string | null | undefined): ApiError |
  * LOGIN_MAX_FAILURES verified guesses, the next attempt trips the lock and is refused
  * here without reaching GoTrue, and so is every attempt while the lock holds.
  * A successful check clears the row (clearLoginFailures), so correct PINs cost nothing.
+ * Every reservation counts, whatever happens next (a 503 from Supabase Auth included).
  * Fails closed: if the counter cannot be written the check is refused with 503
  * rather than running unthrottled.
+ * The lock is judged against the row's updated_at (the database clock that set
+ * locked_until), not the Node clock.
  */
 export async function reserveLoginAttempt(admin: Admin, username: string): Promise<LoginAttempt> {
   const { data, error } = await admin.rpc("record_login_failure", {
@@ -137,7 +149,7 @@ export async function reserveLoginAttempt(admin: Admin, username: string): Promi
     console.error("[auth] record_login_failure failed:", error?.message ?? "no row returned");
     throw new ApiError(503, "INTERNAL", SIGN_IN_UNREACHABLE_MESSAGE);
   }
-  const locked = lockoutError(data.locked_until);
+  const locked = lockoutError(data.locked_until, data.updated_at);
   if (locked) throw locked;
   return data;
 }

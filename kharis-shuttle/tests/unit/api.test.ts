@@ -16,6 +16,13 @@ describe("fromPostgresError", () => {
     expect(fromPostgresError({ message: "NOT_FOUND: Trip not found" }).status).toBe(404);
     expect(fromPostgresError({ message: "FORBIDDEN: Not your booking" }).status).toBe(403);
   });
+  it("maps the CONFLICT prefix raised by the re-seat guard (0011) to 409 with its message", () => {
+    const e = fromPostgresError({ message: "CONFLICT: Trip is full — the seat went to the waitlist", code: "P0001" });
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e.status).toBe(409);
+    expect(e.code).toBe("CONFLICT");
+    expect(e.message).toBe("Trip is full — the seat went to the waitlist");
+  });
   it("maps unique violations to CONFLICT", () => {
     const e = fromPostgresError({ message: 'duplicate key value violates unique constraint "x"', code: "23505" });
     expect(e.status).toBe(409);

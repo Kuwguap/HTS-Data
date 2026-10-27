@@ -19,7 +19,9 @@ export const settingsSchema = z.object({
   booking_open_days_ahead: z.number().int().min(0).max(7),
   daily_announcement_enabled: z.boolean(),
   daily_announcement_time: timeOfDay,
-  location_stale_seconds: z.number().int().min(15).max(3600),
+  // trips.last_* is refreshed at most every 15 s (0007), so anything under 45 s makes
+  // the LIVE chip flap between fixes. The DB check only requires > 0; the default is 90.
+  location_stale_seconds: z.number().int().min(45).max(3600),
   signup_code: optionalText(40),
   default_driver_id: uuid.optional().nullable(),
 });

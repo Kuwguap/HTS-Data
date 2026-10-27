@@ -241,7 +241,7 @@ export function PickupRequestForm({ pickupLocations, trips, defaultTripId, defau
         ✋ Send pickup request
       </Button>
       <p style={{ margin: 0, textAlign: "center", color: "var(--hint)", fontSize: "var(--fs-sm)" }}>
-        The driver gets a push right away and can accept or decline. Requests expire after 45 minutes, or at departure when that&apos;s sooner.
+        The driver gets a push right away and can accept or decline. Requests expire after 45 minutes, or at departure when that&apos;s sooner — once the shuttle is boarding or on the way, the driver has 15 minutes to answer.
       </p>
     </div>
   );

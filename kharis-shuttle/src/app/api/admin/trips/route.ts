@@ -29,7 +29,8 @@ export const GET = withHandler(async (request) => {
  * return_announcement (to hostel) or trip_reminder (to campus) push. A to-campus
  * reminder sent this early uses the tick's own dedupe prefix
  * ('reminder:<trip_id>:<departure epoch seconds>', see run_tick) so the tick does
- * not send a second one when reminder_at comes round.
+ * not send a second one when reminder_at comes round; in every other notified case
+ * the route stamps trips.reminder_sent_at so the tick's reminder loop skips the trip.
  */
 function reminderDedupePrefix(trip: { id: string; departure_at: string }): string {
   return `reminder:${trip.id}:${Math.round(Date.parse(trip.departure_at) / 1000)}`;
@@ -53,7 +54,7 @@ export const POST = withHandler(async (request) => {
   const admin = createAdminClient();
   const settings = await getSettings();
 
-  const { data: trip, error } = await admin.rpc("create_adhoc_trip", {
+  const { data: created, error } = await admin.rpc("create_adhoc_trip", {
     p_direction: input.direction,
     p_origin: input.origin_label,
     p_destination: input.destination_label,
@@ -62,8 +63,9 @@ export const POST = withHandler(async (request) => {
     p_driver_id: input.driver_id ?? null,
     p_created_by: user.id,
   });
-  if (error || !trip) throw fromPostgresError(error);
+  if (error || !created) throw fromPostgresError(error);
 
+  let trip = created;
   let notified = 0;
   if (input.notify) {
     const ids = await listActiveStudentIds(admin, { remindersOnly: true });
@@ -71,6 +73,19 @@ export const POST = withHandler(async (request) => {
     const isReminder = trip.direction !== "to_hostel";
     // create_adhoc_trip only schedules a tick reminder (reminder_at) when the lead has not passed yet.
     const tickWillRemind = isReminder && trip.reminder_at != null && leavingIn > settings.reminder_lead_minutes;
+    // A return_announcement (or an early reminder under its own 'adhoc:' prefix) already
+    // tells everyone about this trip: close the tick's reminder window so run_tick does
+    // not push trip_reminder for the same trip when reminder_at comes round.
+    if (!tickWillRemind && trip.reminder_at != null && trip.reminder_sent_at == null) {
+      const { data: closed } = await admin
+        .from("trips")
+        .update({ reminder_sent_at: new Date().toISOString() })
+        .eq("id", trip.id)
+        .is("reminder_sent_at", null)
+        .select("*")
+        .maybeSingle();
+      if (closed) trip = closed;
+    }
     notified = await notifyAndDrain(admin, {
       userIds: ids,
       kind: isReminder ? "trip_reminder" : "return_announcement",

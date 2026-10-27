@@ -90,8 +90,22 @@ describe("lockoutError", () => {
     const e = lockoutError("2026-10-27T07:14:01.000Z");
     expect(e?.status).toBe(423);
     expect(e?.code).toBe("LOCKED");
-    expect(e?.message).toBe("Too many wrong attempts. Try again in 15 min or ask the hostel office to reset your PIN.");
+    expect(e?.message).toBe("Too many sign-in attempts. Try again in 15 min or ask the hostel office to reset your PIN.");
     expect(lockoutError("2026-10-27T07:00:05.000Z")?.message).toContain("in 1 min");
+  });
+  it("judges the lock against asOf (the database clock) when given, not Date.now()", () => {
+    // Date.now() is 07:00. Lock ended 06:50 by the Node clock, but the DB wrote the row at 06:40:
+    // still locked for 10 min on the clock that set it.
+    const stillLocked = lockoutError("2026-10-27T06:50:00.000Z", "2026-10-27T06:40:00.000Z");
+    expect(stillLocked?.status).toBe(423);
+    expect(stillLocked?.message).toContain("in 10 min");
+    // Vice versa: Date.now() says 10 min left, but the DB clock is already past the lock.
+    expect(lockoutError("2026-10-27T07:10:00.000Z", "2026-10-27T07:10:00.000Z")).toBeNull();
+    expect(lockoutError("2026-10-27T07:10:00.000Z", "2026-10-27T07:12:00.000Z")).toBeNull();
+    // Null / unparsable asOf falls back to Date.now().
+    expect(lockoutError("2026-10-27T07:10:00.000Z", null)?.message).toContain("in 10 min");
+    expect(lockoutError("2026-10-27T07:10:00.000Z", "not a date")?.message).toContain("in 10 min");
+    expect(lockoutError("2026-10-27T06:50:00.000Z", undefined)).toBeNull();
   });
 });
 
@@ -116,6 +130,30 @@ describe("reserveLoginAttempt (count before verifying)", () => {
   it("lets an expired lock through (the SQL side restarts the count)", async () => {
     rpc.mockResolvedValue({
       data: { username: "abena", failed_count: 1, locked_until: new Date(Date.now() - 1000).toISOString(), updated_at: "x" },
+      error: null,
+    });
+    await expect(reserveLoginAttempt(admin, "abena")).resolves.toMatchObject({ failed_count: 1 });
+  });
+  it("judges the lock on the row's updated_at (database clock), not the Node clock", async () => {
+    // Node clock says the lock ended 5 min ago; the DB wrote the row 10 min before that → still locked.
+    rpc.mockResolvedValue({
+      data: {
+        username: "abena",
+        failed_count: 0,
+        locked_until: new Date(Date.now() - 5 * 60_000).toISOString(),
+        updated_at: new Date(Date.now() - 15 * 60_000).toISOString(),
+      },
+      error: null,
+    });
+    await expect(reserveLoginAttempt(admin, "abena")).rejects.toMatchObject({ status: 423, code: "LOCKED" });
+    // Node clock says 5 min left; the DB clock is already past the lock → let through.
+    rpc.mockResolvedValue({
+      data: {
+        username: "abena",
+        failed_count: 1,
+        locked_until: new Date(Date.now() + 5 * 60_000).toISOString(),
+        updated_at: new Date(Date.now() + 6 * 60_000).toISOString(),
+      },
       error: null,
     });
     await expect(reserveLoginAttempt(admin, "abena")).resolves.toMatchObject({ failed_count: 1 });

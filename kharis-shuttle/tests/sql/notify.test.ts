@@ -220,34 +220,39 @@ describe("claim_pending_notifications / finish_notification", () => {
     const retried = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
     expect(retried.map((r) => r.user_id)).toEqual([IDS.s1]);
     expect(retried[0]?.push_attempts).toBe(2);
-    // run_tick's hygiene never touches a 'pending' row inside its TTL
-    await c.query("select finish_notification($1, 'pending', '503 again')", [retried[0]!.id]);
+    // run_tick's hygiene never touches a 'pending' row inside its TTL.
+    // run_tick(now()) may also enqueue rows of its own (the daily announcement between
+    // 06:00 and 08:00 local, reminders, manifests), so every read below is by id.
+    const retriedId = retried[0]!.id;
+    await c.query("select finish_notification($1, 'pending', '503 again')", [retriedId]);
     await c.query("select run_tick(now())");
-    expect(await scalar<string>(c, "select push_status from notifications where user_id = $1", [IDS.s1])).toBe("pending");
+    expect(await scalar<string>(c, "select push_status from notifications where id = $1", [retriedId])).toBe("pending");
   });
 
   it("re-claims rows stuck in sending for more than 2 minutes and gives up after 5 attempts", async () => {
     await c.query("delete from notifications");
     await c.query(`select enqueue_notification(array[$1]::uuid[], 'test', '{}', null, 'stuck:1')`, [IDS.s1]);
-    await c.query("update notifications set push_status = 'sending', push_claimed_at = now() - interval '3 minutes', push_attempts = 1");
+    const stuckId = await scalar<string>(c, "select id from notifications where dedupe_key = $1", [`stuck:1:${IDS.s1}`]);
+    await c.query("update notifications set push_status = 'sending', push_claimed_at = now() - interval '3 minutes', push_attempts = 1 where id = $1", [stuckId]);
     const claimed = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
-    expect(claimed).toHaveLength(1);
-    expect(await scalar<number>(c, "select push_attempts from notifications")).toBe(2);
+    expect(claimed.map((r) => r.id)).toEqual([stuckId]);
+    expect(await scalar<number>(c, "select push_attempts from notifications where id = $1", [stuckId])).toBe(2);
 
-    await c.query("update notifications set push_status = 'sending', push_claimed_at = now() - interval '3 minutes', push_attempts = 5");
+    await c.query("update notifications set push_status = 'sending', push_claimed_at = now() - interval '3 minutes', push_attempts = 5 where id = $1", [stuckId]);
     expect(await rows(c, "select * from claim_pending_notifications(10)")).toHaveLength(0);
-    // run_tick's hygiene marks it failed
+    // run_tick's hygiene marks it failed (read by id: the tick may enqueue rows of its own)
     await c.query("select run_tick(now())");
-    expect(await scalar<string>(c, "select push_status from notifications")).toBe("failed");
+    expect(await scalar<string>(c, "select push_status from notifications where id = $1", [stuckId])).toBe("failed");
   });
 
   it("skips rows whose TTL already expired", async () => {
     await c.query("delete from notifications");
     await c.query(`select enqueue_notification(array[$1]::uuid[], 'trip_nudge', '{}', null, 'ttl:1', 60)`, [IDS.s1]);
-    await c.query("update notifications set created_at = now() - interval '5 minutes'");
+    const ttlId = await scalar<string>(c, "select id from notifications where dedupe_key = $1", [`ttl:1:${IDS.s1}`]);
+    await c.query("update notifications set created_at = now() - interval '5 minutes' where id = $1", [ttlId]);
     expect(await rows(c, "select * from claim_pending_notifications(10)")).toHaveLength(0);
     await c.query("select run_tick(now())");
-    expect(await scalar<string>(c, "select push_status from notifications")).toBe("skipped");
+    expect(await scalar<string>(c, "select push_status from notifications where id = $1", [ttlId])).toBe("skipped");
   });
 });
 
@@ -261,5 +266,59 @@ describe("function privileges", () => {
     expect(await errorOf(c, "select enqueue_notification(array[]::uuid[], 'test', '{}', null, 'x')")).toMatch(/permission denied/);
     expect(await errorOf(c, "select materialize_trips(current_date, current_date)")).toMatch(/permission denied/);
     await c.query("rollback");
+  });
+});
+
+describe("pickup_request_cancelled (migrations 0012 + 0013)", () => {
+  it("every notification_kind value has a message template (20 kinds)", async () => {
+    const missing = await rows<{ kind: string }>(
+      c,
+      `select e::text as kind
+         from unnest(enum_range(null::public.notification_kind)) as e
+         left join message_templates t on t.key = e
+        where t.key is null`,
+    );
+    expect(missing).toEqual([]);
+    expect(await scalar<string>(c, "select count(*) from unnest(enum_range(null::public.notification_kind))")).toBe("20");
+    expect(await scalar<string>(c, "select count(*) from message_templates")).toBe("20");
+  });
+
+  it("renders the template with {name} and {pickup}", async () => {
+    const r = await one<{ title: string; body: string }>(
+      c,
+      `select * from render_template('pickup_request_cancelled', '{"name": "Abena Owusu", "pickup": "KSB"}'::jsonb)`,
+    );
+    expect(r.title).toBe("🙅 Pickup request withdrawn");
+    expect(r.body).toBe("Abena Owusu no longer needs a pickup at KSB.");
+  });
+
+  it("enqueue_notification accepts the new kind and dedupes on the route's prefix", async () => {
+    await c.query("delete from notifications");
+    const enqueue = () =>
+      scalar<number>(
+        c,
+        `select enqueue_notification(array[$1]::uuid[], 'pickup_request_cancelled',
+                 '{"name": "Abena Owusu", "pickup": "KSB", "request_id": "req-1"}'::jsonb,
+                 '/driver/requests', 'pickup_request_cancelled:req-1', 900, 'high', 'pr:req-1')`,
+        [IDS.driver],
+      );
+    expect(await enqueue()).toBe(1);
+    const n = await one<Claimed & { dedupe_key: string }>(
+      c,
+      "select user_id, kind, title, body, url, dedupe_key, urgency, collapse_tag from notifications where kind = 'pickup_request_cancelled'",
+    );
+    expect(n).toMatchObject({
+      user_id: IDS.driver,
+      kind: "pickup_request_cancelled",
+      title: "🙅 Pickup request withdrawn",
+      body: "Abena Owusu no longer needs a pickup at KSB.",
+      url: "/driver/requests",
+      dedupe_key: `pickup_request_cancelled:req-1:${IDS.driver}`,
+      urgency: "high",
+      collapse_tag: "pr:req-1",
+    });
+    expect(await enqueue()).toBe(0); // a retry of the same withdrawal never pushes twice
+    const claimed = await rows<Claimed>(c, "select * from claim_pending_notifications(10)");
+    expect(claimed.map((x) => x.kind)).toEqual(["pickup_request_cancelled"]);
   });
 });

@@ -161,6 +161,13 @@ describe("admin schemas", () => {
     expect(settingsPatchSchema.safeParse({ reminder_lead_minutes: 1 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ fare_pesewas: 1000 }).success).toBe(true);
   });
+  it("location_stale_seconds needs at least 45 s (trips.last_* refreshes every 15 s)", () => {
+    expect(settingsPatchSchema.safeParse({ location_stale_seconds: 30 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ location_stale_seconds: 44 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ location_stale_seconds: 45 }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ location_stale_seconds: 90 }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ location_stale_seconds: 3601 }).success).toBe(false);
+  });
 });
 
 describe("safeNextPath (post-login redirect guard)", () => {

@@ -3,7 +3,7 @@ import { requireRole } from "@/lib/auth/require";
 import { getTripAdmin } from "@/lib/data/admin";
 import { getSettings } from "@/lib/data/settings";
 import type { TablesUpdate } from "@/lib/db.types";
-import { listDriverIds, notifyAndDrain } from "@/lib/notify/enqueue";
+import { listDriverIds, notifyAndDrain, promotedDedupePrefix } from "@/lib/notify/enqueue";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { formatDayTime, formatTime, localDateString } from "@/lib/time";
 import { tripPatchSchema } from "@/lib/validation/admin";
@@ -100,7 +100,7 @@ export const PATCH = withHandler<RouteCtx<{ id: string }>>(async (request, ctx) 
             kind: "booking_promoted",
             vars: { ...vars, pickup: b.pickup_location_id ? (pickupName.get(b.pickup_location_id) ?? "your pickup point") : "your pickup point" },
             url: `/app/trips/${trip.id}`,
-            dedupePrefix: `booking_promoted:${b.id}`,
+            dedupePrefix: promotedDedupePrefix(b),
             urgency: "high",
             collapseTag: `trip:${trip.id}`,
           }),

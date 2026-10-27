@@ -30,3 +30,6 @@ assets/icon-sources/*.png
 
 # orchestration scripts (session scratch)
 .workflows/
+
+# deploy bundles with hashed credentials (generated at handover)
+.deploy/

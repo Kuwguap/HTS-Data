@@ -46,6 +46,21 @@ export const POST = withHandler(async (request) => {
     if (!statusError && boarding) trip = boarding;
   }
 
+  // The announcement below IS this trip's reminder. create_adhoc_trip still sets
+  // reminder_at when the lead has not passed, and run_tick's reminder loop (0005) keys on
+  // `reminder_sent_at is null and reminder_at is not null` for ad-hoc trips, so it would
+  // push trip_reminder to every student without a booking a second time. Close it now.
+  if (trip.reminder_at != null && trip.reminder_sent_at == null) {
+    const { data: closed } = await admin
+      .from("trips")
+      .update({ reminder_sent_at: new Date().toISOString() })
+      .eq("id", trip.id)
+      .is("reminder_sent_at", null)
+      .select("*")
+      .maybeSingle();
+    if (closed) trip = closed;
+  }
+
   // The return-trip shout-out goes to every active student (it replaces the group message),
   // not only those who opted into scheduled reminders.
   const studentIds = await listActiveStudentIds(admin, { remindersOnly: false });

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { Button, Empty, Field, List, Row, SegmentedControl, Sheet, Switch, useToast } from "@/components/ui";
@@ -25,6 +26,14 @@ type Form = {
 };
 
 const EMPTY: Form = { direction: "to_campus", depart_time: "07:30", days_of_week: [1, 2, 3, 4, 5], label: "", seat_capacity: "", bookings_enabled: true, is_active: true };
+
+/** PATCH / DELETE /api/admin/schedule/:id report how the already created trips were handled. */
+type PropagationResult = { deleted_trips?: number; kept_with_bookings?: number };
+
+export function keptTripsNote(kept: number | undefined): string | null {
+  if (!kept || kept <= 0) return null;
+  return `${kept} upcoming ${kept === 1 ? "trip" : "trips"} with bookings ${kept === 1 ? "keeps its" : "keep their"} old time — change ${kept === 1 ? "it" : "them"} under Trips`;
+}
 
 function toForm(s: ScheduleTime): Form {
   return {
@@ -69,6 +78,16 @@ export function ScheduleEditor({ schedule, defaultCapacity, campusName, hostelNa
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [busy, setBusy] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
+  /** Inline note after the last change: trips that kept their old values because they have bookings. */
+  const [keptNote, setKeptNote] = useState<string | null>(null);
+
+  /** One toast (the provider shows one at a time): the success line, plus the kept-trips warning when there is one. */
+  const report = (done: string, result: PropagationResult | undefined) => {
+    const note = keptTripsNote(result?.kept_with_bookings);
+    setKeptNote(note);
+    if (note) toast(`${done} · ⚠️ ${note}`, { tone: "amber", ms: 7000, onTap: () => router.push("/admin/trips") });
+    else toast(done, { tone: "green" });
+  };
 
   const open = (s: ScheduleTime | "new") => {
     setEditing(s);
@@ -96,9 +115,13 @@ export function ScheduleEditor({ schedule, defaultCapacity, campusName, hostelNa
     setBusy(true);
     setErrors({});
     try {
-      if (editing === "new") await api.post("/api/admin/schedule", payload());
-      else if (editing) await api.patch(`/api/admin/schedule/${editing.id}`, payload());
-      toast(editing === "new" ? "✅ Departure added" : "✅ Departure saved", { tone: "green" });
+      if (editing === "new") {
+        await api.post("/api/admin/schedule", payload());
+        report("✅ Departure added", undefined);
+      } else if (editing) {
+        const result = await api.patch<PropagationResult>(`/api/admin/schedule/${editing.id}`, payload());
+        report("✅ Departure saved", result);
+      }
       close();
       router.refresh();
     } catch (err) {
@@ -118,11 +141,11 @@ export function ScheduleEditor({ schedule, defaultCapacity, campusName, hostelNa
 
   async function remove() {
     if (!editing || editing === "new") return;
-    if (!window.confirm(`Delete the ${formatClock(editing.depart_time)} departure? Trips already created today are kept.`)) return;
+    if (!window.confirm(`Delete the ${formatClock(editing.depart_time)} departure? Upcoming trips without bookings are removed too; trips with bookings are kept.`)) return;
     setBusy(true);
     try {
-      await api.delete(`/api/admin/schedule/${editing.id}`);
-      toast("🗑 Departure deleted");
+      const result = await api.delete<PropagationResult>(`/api/admin/schedule/${editing.id}`);
+      report("🗑 Departure deleted", result);
       close();
       router.refresh();
     } catch (err) {
@@ -135,8 +158,8 @@ export function ScheduleEditor({ schedule, defaultCapacity, campusName, hostelNa
   async function toggleActive(s: ScheduleTime, next: boolean) {
     setToggling(s.id);
     try {
-      await api.patch(`/api/admin/schedule/${s.id}`, { is_active: next });
-      toast(next ? "✅ Departure on" : "⏸ Departure paused");
+      const result = await api.patch<PropagationResult>(`/api/admin/schedule/${s.id}`, { is_active: next });
+      report(next ? "✅ Departure on" : "⏸ Departure paused", result);
       router.refresh();
     } catch (err) {
       toast(`⚠️ ${errorMessage(err)}`, { tone: "red" });
@@ -181,8 +204,16 @@ export function ScheduleEditor({ schedule, defaultCapacity, campusName, hostelNa
       <Button size="big" onClick={() => open("new")}>
         ➕ Add departure
       </Button>
+      {keptNote ? (
+        <p className="k-help" role="status" style={{ textAlign: "center" }}>
+          ⚠️ {keptNote}.{" "}
+          <Link href="/admin/trips" className="k-link">
+            Open Trips
+          </Link>
+        </p>
+      ) : null}
       <p className="k-help" style={{ textAlign: "center" }}>
-        Changes apply from tomorrow; today&apos;s trips are already created — edit them under Trips.
+        Changes apply to trips created from now on. Upcoming trips that already have bookings keep their old time — change them under Trips.
       </p>
 
       <Sheet

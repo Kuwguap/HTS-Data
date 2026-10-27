@@ -1,7 +1,8 @@
 import type { NotificationKind } from "@/lib/db.types";
 
 /**
- * Default message templates — must match supabase/migrations/0008_seed.sql.
+ * Default message templates — must match supabase/migrations/0008_seed.sql (and the
+ * later per-kind seeds such as 0013_pickup_request_cancelled_template.sql).
  * Used by /admin/templates for "Restore default" and the live preview.
  */
 export const TEMPLATE_DEFAULTS: Record<NotificationKind, { title: string; body: string }> = {
@@ -21,6 +22,7 @@ export const TEMPLATE_DEFAULTS: Record<NotificationKind, { title: string; body: 
   pickup_request_accepted: { title: "✅ Pickup accepted", body: "Wait at {pickup}. {message}" },
   pickup_request_declined: { title: "❌ Pickup declined", body: "{message}" },
   pickup_request_expired: { title: "⌛ Pickup request expired", body: "Nobody responded to your request at {pickup}. Try again or call the office." },
+  pickup_request_cancelled: { title: "🙅 Pickup request withdrawn", body: "{name} no longer needs a pickup at {pickup}." },
   return_announcement: { title: "🚌 Shuttle heading to {hostel}", body: "Shuttle at {origin} → {hostel}. Leaving in {count} min. Tap if you're coming." },
   broadcast: { title: "📣 {title}", body: "{message}" },
   test: { title: "🔔 Notifications are on", body: "You'll get shuttle reminders here, {name}." },
@@ -61,6 +63,7 @@ export const TEMPLATE_META: Record<NotificationKind, TemplateMeta> = {
   pickup_request_accepted: { label: "Pickup accepted", when: "When the driver accepts · the student", placeholders: ["pickup", "message"] },
   pickup_request_declined: { label: "Pickup declined", when: "When the driver declines · the student", placeholders: ["pickup", "message"] },
   pickup_request_expired: { label: "Pickup request expired", when: "When nobody responded in time · the student", placeholders: ["pickup"] },
+  pickup_request_cancelled: { label: "Pickup request withdrawn", when: "When a student withdraws a request the driver had accepted · the driver", placeholders: ["name", "pickup"] },
   return_announcement: { label: "Return announcement", when: "When the driver announces a return trip · all students", placeholders: ["origin", "hostel", "count", "seats"] },
   broadcast: { label: "Announcement (broadcast)", when: "When an admin sends an announcement", placeholders: ["title", "message", "hostel"] },
   test: { label: "Test notification", when: "When someone turns on reminders", placeholders: ["name"] },

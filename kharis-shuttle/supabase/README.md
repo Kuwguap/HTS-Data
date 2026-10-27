@@ -18,6 +18,8 @@ which runs `scripts/pg-shims.sql` first to fake the Supabase roles, `auth.*` and
 | `0009_cron.sql` | `cron_tick()` + pg_cron jobs — no-op unless `pg_cron` **and** `pg_net` are installed |
 | `0010_login_lockout.sql` | `record_login_failure(username, max_failures, lockout_minutes)` — one atomic upsert per sign-in attempt (the login/change-PIN routes reserve the attempt before asking Supabase Auth) |
 | `0011_reseat_guard.sql` | `set_booking_status` re-created: re-seating a no-show/cancelled rider on a full trip raises `CONFLICT` instead of overbooking |
+| `0012_pickup_request_cancelled.sql` | enum value `notification_kind.pickup_request_cancelled` (the driver hears when a rider withdraws an accepted pickup request) |
+| `0013_pickup_request_cancelled_template.sql` | its default `message_templates` row — a separate file because a new enum value cannot be used in the transaction that adds it |
 
 All migrations are idempotent: re-applying any of them on an already-migrated database
 is safe (`if not exists`, `create or replace`, `drop policy if exists`, `on conflict do nothing`).

@@ -19,6 +19,43 @@ const PUSH_TTL_SECONDS = 900;
 /** A bus that already left is on the road: give the driver at least the push's lifetime to respond. */
 const REQUEST_ON_ROAD_TTL_MS = PUSH_TTL_SECONDS * 1000;
 
+/**
+ * Expire the rider's pending requests whose expires_at has passed (mirrors step 6 of
+ * run_tick in 0005_fn_trips_tick.sql: status → expired, pickup_request_expired to the
+ * rider under 'pr_expired:<request id>'). Never throws: a failure here only means the
+ * insert may still hit the unique index, which is handled below.
+ */
+async function expireStalePendingRequests(admin: ReturnType<typeof createAdminClient>, riderId: string, nowMs: number): Promise<void> {
+  const { data: expired, error } = await admin
+    .from("pickup_requests")
+    .update({ status: "expired" })
+    .eq("rider_id", riderId)
+    .eq("status", "pending")
+    .lte("expires_at", new Date(nowMs).toISOString())
+    .select("id, rider_id, pickup_location_id, custom_place");
+  if (error) {
+    console.error("[pickup-requests] expiring stale requests failed:", error.message);
+    return;
+  }
+  for (const req of expired ?? []) {
+    let pickup: string | null = null;
+    if (req.pickup_location_id) {
+      const { data: loc } = await admin.from("pickup_locations").select("name").eq("id", req.pickup_location_id).maybeSingle();
+      pickup = loc?.name ?? null;
+    }
+    await notifyAndDrain(admin, {
+      userIds: [req.rider_id],
+      kind: "pickup_request_expired",
+      vars: { pickup: pickup ?? req.custom_place ?? "your pickup point", request_id: req.id },
+      url: `/app/requests/${req.id}`,
+      dedupePrefix: `pr_expired:${req.id}`,
+      ttlSeconds: 3600,
+      urgency: "normal",
+      collapseTag: `request:${req.id}`,
+    });
+  }
+}
+
 /** GET /api/pickup-requests — my requests, newest first. */
 export const GET = withHandler(async () => {
   const { user } = await requireUser();
@@ -65,6 +102,13 @@ export const POST = withHandler(async (request) => {
     }
     pickupName = loc.name;
   }
+
+  // The partial unique index pickup_requests_one_pending ignores expires_at, so a pending
+  // request whose expires_at passed (the tick has not run yet) would make the insert below
+  // fail with 23505 and point the rider at a dead request. Expire the caller's own stale
+  // rows first, exactly the way run_tick does (same kind, vars and 'pr_expired:' prefix,
+  // so the tick cannot send the expiry a second time).
+  await expireStalePendingRequests(admin, user.id, now);
 
   const { data: pending } = await admin
     .from("pickup_requests")

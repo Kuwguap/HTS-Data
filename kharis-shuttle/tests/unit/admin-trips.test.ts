@@ -7,11 +7,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { rpc, createAdminClient, requireRole, notifyAndDrain, listActiveStudentIds } = vi.hoisted(() => {
+const { rpc, tripUpdates, createAdminClient, requireRole, notifyAndDrain, listActiveStudentIds } = vi.hoisted(() => {
   const rpc = vi.fn();
+  /** `from("trips").update(...)...maybeSingle()` calls, in order. */
+  const tripUpdates: Array<{ table: string; patch: Record<string, unknown>; filters: unknown[][] }> = [];
+  const from = (table: string) => {
+    const rec = { table, patch: {} as Record<string, unknown>, filters: [] as unknown[][] };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api: any = {
+      update: (patch: Record<string, unknown>) => ((rec.patch = patch), api),
+      select: () => api,
+      eq: (...args: unknown[]) => (rec.filters.push(["eq", ...args]), api),
+      is: (...args: unknown[]) => (rec.filters.push(["is", ...args]), api),
+      maybeSingle: async () => {
+        tripUpdates.push(rec);
+        return { data: null, error: null };
+      },
+    };
+    return api;
+  };
   return {
     rpc,
-    createAdminClient: vi.fn(() => ({ rpc })),
+    tripUpdates,
+    createAdminClient: vi.fn(() => ({ rpc, from })),
     requireRole: vi.fn(),
     notifyAndDrain: vi.fn(),
     listActiveStudentIds: vi.fn(),
@@ -84,6 +102,7 @@ function tripRow(departureAt: string) {
 
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW);
+  tripUpdates.length = 0;
   requireRole.mockReset();
   requireRole.mockResolvedValue({
     user: { id: ADMIN_ID },
@@ -155,6 +174,59 @@ describe("POST /api/admin/trips", () => {
     expect(body.error.code).toBe("VALIDATION");
     expect(Object.keys(body.error.details.fieldErrors)).toEqual(["departure_at"]);
     expect(rpc).not.toHaveBeenCalled();
+  });
+
+  describe("notify: true and the tick's reminder", () => {
+    const inTwoHours = new Date(NOW + 2 * 60 * 60_000).toISOString();
+    const reminderAt = new Date(NOW + 90 * 60_000).toISOString(); // lead 30 min, as create_adhoc_trip would set
+
+    it("to_hostel: the return_announcement replaces the reminder, so reminder_sent_at is stamped before the push", async () => {
+      rpc.mockImplementation(async (_fn: string, args: { p_departure_at: string }) => ({
+        data: { ...tripRow(args.p_departure_at), direction: "to_hostel", origin_label: "KSB", destination_label: "Kharis Courts Hostel", reminder_at: reminderAt, reminder_sent_at: null },
+        error: null,
+      }));
+      listActiveStudentIds.mockResolvedValue([ADMIN_ID]);
+      const res = await POST(post({ direction: "to_hostel", origin_label: "KSB", destination_label: "Kharis Courts Hostel", departure_at: inTwoHours, notify: true }), ctx);
+      expect(res.status).toBe(200);
+
+      expect(tripUpdates).toHaveLength(1);
+      expect(tripUpdates[0]!.table).toBe("trips");
+      expect(tripUpdates[0]!.patch).toEqual({ reminder_sent_at: expect.any(String) });
+      expect(Number.isNaN(Date.parse(tripUpdates[0]!.patch.reminder_sent_at as string))).toBe(false);
+      expect(tripUpdates[0]!.filters).toEqual([
+        ["eq", "id", "77777777-0000-4000-8000-000000000001"],
+        ["is", "reminder_sent_at", null],
+      ]);
+      expect(notifyAndDrain).toHaveBeenCalledTimes(1);
+      expect(notifyAndDrain.mock.calls[0]![1]).toMatchObject({ kind: "return_announcement", dedupePrefix: "adhoc:77777777-0000-4000-8000-000000000001" });
+      // the stamp happens before the push is enqueued
+      expect(tripUpdates.length).toBe(1);
+    });
+
+    it("to_campus with the lead still ahead: re-uses the tick's reminder prefix and leaves reminder_sent_at alone", async () => {
+      rpc.mockImplementation(async (_fn: string, args: { p_departure_at: string }) => ({
+        data: { ...tripRow(args.p_departure_at), reminder_at: reminderAt, reminder_sent_at: null },
+        error: null,
+      }));
+      listActiveStudentIds.mockResolvedValue([ADMIN_ID]);
+      const res = await POST(post({ departure_at: inTwoHours, notify: true }), ctx);
+      expect(res.status).toBe(200);
+      expect(tripUpdates).toEqual([]);
+      expect(notifyAndDrain.mock.calls[0]![1]).toMatchObject({
+        kind: "trip_reminder",
+        dedupePrefix: `reminder:77777777-0000-4000-8000-000000000001:${Math.round(Date.parse(inTwoHours) / 1000)}`,
+      });
+    });
+
+    it("no reminder scheduled at all (reminder_at null): nothing to stamp", async () => {
+      rpc.mockImplementation(async (_fn: string, args: { p_departure_at: string }) => ({
+        data: { ...tripRow(args.p_departure_at), direction: "to_hostel", reminder_at: null, reminder_sent_at: null },
+        error: null,
+      }));
+      const res = await POST(post({ direction: "to_hostel", departure_at: new Date(NOW + 20 * 60_000).toISOString(), notify: true }), ctx);
+      expect(res.status).toBe(200);
+      expect(tripUpdates).toEqual([]);
+    });
   });
 
   it("requires an admin before reading the body", async () => {

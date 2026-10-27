@@ -62,6 +62,17 @@ export async function enqueueNotification(admin: Admin, input: EnqueueInput): Pr
   return typeof data === "number" ? data : 0;
 }
 
+/**
+ * Dedupe prefix for booking_promoted. book_seat() re-uses a rider's cancelled / no_show
+ * row, so the same booking id can be promoted more than once: the promotion stamp
+ * (`bookings.promoted_at`, set by booking_promote_next) keeps every promotion distinct,
+ * while a retry of the same promotion still collapses. Same shape in every promoting
+ * route (student cancel, driver no-show / cancel, admin capacity raise).
+ */
+export function promotedDedupePrefix(booking: { id: string; promoted_at?: string | null }): string {
+  return `booking:${booking.id}:promoted:${Date.parse(booking.promoted_at ?? "") || Date.now()}`;
+}
+
 /** Active students; `remindersOnly` keeps only those with reminders switched on. */
 export async function listActiveStudentIds(admin: Admin, opts: { remindersOnly?: boolean } = {}): Promise<string[]> {
   let query = admin.from("profiles").select("id").eq("role", "student").eq("is_active", true);

@@ -379,3 +379,48 @@ describe("timezone", () => {
     await c.query("update settings set timezone = 'Africa/Accra' where id = 1");
   });
 });
+
+describe("run_tick — announced ad-hoc to_hostel trips", () => {
+  // create_adhoc_trip works off the real clock (reminder_at = departure − lead when the lead
+  // has not passed), so these cases use now() and tick at the trip's own reminder_at.
+  beforeAll(async () => {
+    c = await resetDb();
+  });
+  afterAll(async () => {
+    await c?.end();
+  });
+
+  async function announcedTrip(): Promise<TripRow> {
+    const t = await one<TripRow>(
+      c,
+      `select * from create_adhoc_trip('to_hostel', 'KSB', 'Kharis Courts Hostel', now() + interval '90 minutes', 10, $1, $1)`,
+      [IDS.driver],
+    );
+    expect(t.reminder_at).not.toBeNull(); // lead 60 < 90 → the tick would remind
+    expect(t.reminder_sent_at).toBeNull();
+    return t;
+  }
+  const remindersFor = (tripId: string) =>
+    scalar<string>(c, "select count(*) from notifications where kind = 'trip_reminder' and data->>'trip_id' = $1", [tripId]);
+  /** reminder_at carries microseconds; a JS Date truncates them, so tick one second later. */
+  const reminderTick = (t: TripRow, plusMs = 0) => new Date(t.reminder_at!.getTime() + 1000 + plusMs).toISOString();
+
+  it("control: without the route's stamp the tick ALSO pushes trip_reminder for the announced trip", async () => {
+    const t = await announcedTrip();
+    await tick(c, reminderTick(t));
+    expect(await remindersFor(t.id)).toBe("3"); // every student without a booking
+    expect((await one<TripRow>(c, "select * from trips where id = $1", [t.id])).reminder_sent_at).toBeTruthy();
+  });
+
+  it("the announce / admin routes stamp reminder_sent_at after create_adhoc_trip, so the tick stays silent", async () => {
+    const t = await announcedTrip();
+    // exactly what POST /api/driver/announce and POST /api/admin/trips (notify, to_hostel) do
+    await c.query("update trips set reminder_sent_at = now() where id = $1 and reminder_sent_at is null", [t.id]);
+    const r = await tick(c, reminderTick(t));
+    expect(await remindersFor(t.id)).toBe("0");
+    // and a later tick inside the window does not catch up either
+    await tick(c, reminderTick(t, 5 * 60_000));
+    expect(await remindersFor(t.id)).toBe("0");
+    expect(r.expired_trips).toBe(0);
+  });
+});

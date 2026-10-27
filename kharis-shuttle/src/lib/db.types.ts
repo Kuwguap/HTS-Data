@@ -32,6 +32,7 @@ export type NotificationKind =
   | "pickup_request_accepted"
   | "pickup_request_declined"
   | "pickup_request_expired"
+  | "pickup_request_cancelled"
   | "return_announcement"
   | "broadcast"
   | "test";

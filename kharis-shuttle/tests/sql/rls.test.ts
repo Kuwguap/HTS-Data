@@ -182,8 +182,11 @@ describe("driver and admin", () => {
 
   it("admin sees templates and tick runs", async () => {
     await c.query("select run_tick(now())");
+    // Every seeded template (the superuser's count), whatever the seed migrations add over time.
+    const allTemplates = await count(c, "message_templates");
+    expect(Number(allTemplates)).toBeGreaterThanOrEqual(19);
     await as(c, { userId: IDS.admin }, async (cx) => {
-      expect(await count(cx, "message_templates")).toBe("19");
+      expect(await count(cx, "message_templates")).toBe(allTemplates);
       expect(Number(await count(cx, "tick_runs"))).toBeGreaterThan(0);
       expect(await scalar<string>(cx, "select my_role()")).toBe("admin");
     });
@@ -205,7 +208,9 @@ describe("service_role and anon", () => {
       expect(await count(cx, "bookings")).toBe("2");
       expect(await count(cx, "push_subscriptions")).toBe("2");
       expect(await count(cx, "login_attempts")).toBe("1");
-      expect(await count(cx, "notifications")).toBe("2");
+      // Only the rows this file enqueued: the run_tick(now()) above may have added the
+      // daily announcement (06:00–08:00 local), reminders or a manifest of its own.
+      expect(await scalar<string>(cx, "select count(*) from notifications where dedupe_key like 'rls:test:%'")).toBe("2");
       expect(await errorOf(cx, "select run_tick()")).toBe("");
       expect(await errorOf(cx, "select book_seat($1, $2)", [IDS.s3, tripId])).toBe("");
     });
