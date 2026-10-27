@@ -77,8 +77,9 @@ Useful scripts:
    "Confirm email" and in **Authentication → Settings** turn **off** "Allow new users to sign up"
    (the app creates users itself with the service role).
 2. **Secrets**: `pnpm vapid`, then generate `PIN_PEPPER` and `CRON_SECRET` (`openssl rand -hex 32`).
-3. **Host the app** (Vercel: import the repo, root directory `shuttle-me`, add the env vars).
-   Any Node host works; nothing depends on Vercel.
+3. **Host the app** (Vercel: import the repo with root directory `shuttle-me` and add the env vars,
+   or `npx vercel deploy --prod` from this folder after `vercel env add` for each variable).
+   Any Node host works; nothing depends on Vercel. Keep `.vercelignore` so local secrets never upload.
 4. **Admin**: `pnpm seed:admin --username <name> --pin <4–6 digits>` with `.env.local` pointing at
    the project. Log in at `/login`, open `/admin/settings`, check the fare, times and pickup points
    (`/admin/schedule`, `/admin/locations`), and promote the driver in `/admin/users`.
