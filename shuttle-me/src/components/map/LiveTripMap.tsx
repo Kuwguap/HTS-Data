@@ -8,6 +8,8 @@ import type { BookingStatus, PickupLocation, Trip } from "@/lib/db.types";
 import { estimateEtaSeconds, formatDistance, formatEta, haversineM, type LatLng } from "@/lib/geo";
 import { useTripLocation } from "@/hooks/useTripLocation";
 import { useTripRoute, viaKeyOf } from "@/hooks/useTripRoute";
+import { chipOptions, flagIcon, pinIcon } from "@/lib/map/icons";
+import { placeLabels } from "@/lib/map/labels";
 import { HAS_DARK_TILES, MAP_DARK_CLASS, TILE_LAYER_OPTIONS, tileUrlFor } from "@/lib/map/tiles";
 
 export type LiveTripMapProps = {
@@ -73,26 +75,6 @@ function updateBusMarker(marker: L.Marker, heading: number | null, stale: boolea
   if (emoji) emoji.style.transform = `rotate(${headingDeg(heading)}deg)`;
 }
 
-function pinIcon(mine: boolean): L.DivIcon {
-  return L.divIcon({
-    className: "k-pin-marker",
-    html: `<span aria-hidden="true" style="${mine ? "filter:drop-shadow(0 2px 3px rgba(0,0,0,.35)) drop-shadow(0 0 4px var(--accent))" : ""}">📍</span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 26],
-    tooltipAnchor: [0, -24],
-  });
-}
-
-function destinationIcon(): L.DivIcon {
-  return L.divIcon({
-    className: "k-pin-marker",
-    html: `<span aria-hidden="true">🏁</span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 26],
-    tooltipAnchor: [0, -24],
-  });
-}
-
 const roundBtn: React.CSSProperties = {
   width: 44,
   height: 44,
@@ -121,6 +103,8 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
   const fittedRef = useRef(false);
   const routeFittedRef = useRef(false);
   const [follow, setFollow] = useState(true);
+  // Bumped on every zoom so the stop chips are re-spread for the new scale.
+  const [zoomTick, setZoomTick] = useState(0);
 
   const { trip, points, lastPoint, isLive, lastSeenSeconds, source } = useTripLocation({
     tripId,
@@ -203,6 +187,7 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
 
     // Dragging the map turns off "follow the bus" until the user recentres.
     map.on("dragstart", () => setFollow(false));
+    map.on("zoomend", () => setZoomTick((n) => n + 1));
 
     // Leaflet measures the container on creation; fix up after layout settles.
     const t = window.setTimeout(() => map.invalidateSize(), 50);
@@ -232,28 +217,23 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     const group = pinsRef.current;
     if (!group) return;
     group.clearLayers();
-    // Stops within ~120 m of each other would stack their chips: hand out top / bottom / right / left in turn.
-    const placed: Array<{ p: LatLng; dir: L.Direction }> = [];
-    const pickDirection = (p: LatLng): L.Direction => {
-      const taken = new Set(placed.filter((q) => haversineM(q.p, p) < 120).map((q) => q.dir));
-      const dir = (["top", "bottom", "right", "left"] as L.Direction[]).find((d) => !taken.has(d)) ?? "top";
-      placed.push({ p, dir });
-      return dir;
-    };
-    for (const p of pickupLocations) {
+    // Chip sides are chosen in screen space at the current zoom so stops that sit close
+    // together fan out (top / bottom / right / left) instead of printing over each other.
+    const map = mapRef.current;
+    const items = pickupLocations.map((p) => {
+      const c = map ? map.latLngToContainerPoint([p.lat, p.lng]) : { x: 0, y: 0 };
+      return { x: c.x, y: c.y, text: p.id === myPickupLocationId ? `You · ${p.name}` : p.name };
+    });
+    const size = map?.getSize();
+    const dirs = placeLabels(items, size ? { w: size.x, h: size.y } : undefined);
+    pickupLocations.forEach((p, i) => {
       const mine = p.id === myPickupLocationId;
-      const m = L.marker([p.lat, p.lng], { icon: pinIcon(mine), interactive: true, keyboard: false, zIndexOffset: mine ? 500 : 0 });
+      const m = L.marker([p.lat, p.lng], { icon: pinIcon(L, mine), interactive: true, keyboard: false, zIndexOffset: mine ? 500 : 0 });
       // Every stop shows its name, like the place names on the basemap; the viewer's own stop is highlighted.
-      m.bindTooltip(mine ? `You · ${p.name}` : p.name, {
-        permanent: true,
-        direction: pickDirection(p),
-        className: mine ? "k-map-tip k-map-tip--mine" : "k-map-tip",
-        opacity: 1,
-        interactive: false,
-      });
+      m.bindTooltip(mine ? `You · ${p.name}` : p.name, chipOptions(dirs[i] ?? "top", mine ? "mine" : "plain"));
       group.addLayer(m);
-    }
-  }, [pickupLocations, myPickupLocationId]);
+    });
+  }, [pickupLocations, myPickupLocationId, zoomTick]);
 
   // Destination flag with the hostel/campus name (skipped when it coincides with a pickup pin, which already carries a label).
   useEffect(() => {
@@ -264,8 +244,8 @@ export default function LiveTripMap({ tripId, initialTrip, pickupLocations, myPi
     if (!destination) return;
     const onAPin = pickupLocations.some((p) => haversineM(p, destination) < 25);
     if (onAPin) return;
-    const m = L.marker([destination.lat, destination.lng], { icon: destinationIcon(), interactive: false, keyboard: false, zIndexOffset: 400 }).addTo(map);
-    m.bindTooltip(destination.name, { permanent: true, direction: "top", className: "k-map-tip k-map-tip--dest", opacity: 1, interactive: false });
+    const m = L.marker([destination.lat, destination.lng], { icon: flagIcon(L), interactive: false, keyboard: false, zIndexOffset: 400 }).addTo(map);
+    m.bindTooltip(destination.name, chipOptions("top", "dest"));
     destRef.current = m;
   }, [destination, pickupLocations]);
 

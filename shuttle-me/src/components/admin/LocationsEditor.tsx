@@ -2,14 +2,18 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Art, Button, Empty, Field, List, Pill, Row, Sheet, Skeleton, Switch, useToast } from "@/components/ui";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
 import type { PickupLocation, TripDirection } from "@/lib/db.types";
+import type { PickerPlace } from "./LocationPicker";
 
 const LocationPicker = dynamic(() => import("./LocationPicker"), { ssr: false, loading: () => <Skeleton lines={1} height={220} widths={["100%"]} /> });
 
-type Props = { locations: PickupLocation[]; campusName: string; hostelName: string };
+/** Hostel / campus from settings, when their coordinates are set. */
+export type Destination = { name: string; lat: number; lng: number };
+
+type Props = { locations: PickupLocation[]; campusName: string; hostelName: string; destinations: Destination[] };
 
 type Form = { name: string; description: string; direction: TripDirection | ""; lat: string; lng: string; sort_order: string; is_active: boolean };
 
@@ -33,7 +37,7 @@ function num(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function LocationsEditor({ locations, campusName, hostelName }: Props) {
+export function LocationsEditor({ locations, campusName, hostelName, destinations }: Props) {
   const router = useRouter();
   const { toast } = useToast();
   const [editing, setEditing] = useState<PickupLocation | "new" | null>(null);
@@ -43,6 +47,18 @@ export function LocationsEditor({ locations, campusName, hostelName }: Props) {
   const [toggling, setToggling] = useState<string | null>(null);
 
   const dirLabel = (d: TripDirection | null) => (d === "to_campus" ? `To ${campusName}` : d === "to_hostel" ? `To ${hostelName}` : "Both directions");
+
+  // Every other saved place, with its name, drawn on the picker map for context.
+  const editingId = editing !== null && editing !== "new" ? editing.id : null;
+  const places = useMemo<PickerPlace[]>(
+    () => [
+      ...locations
+        .filter((l) => l.id !== editingId)
+        .map((l): PickerPlace => ({ id: l.id, name: l.is_active ? l.name : `${l.name} · hidden`, lat: l.lat, lng: l.lng, kind: "pickup" })),
+      ...destinations.map((d): PickerPlace => ({ ...d, kind: "destination" })),
+    ],
+    [locations, destinations, editingId],
+  );
 
   const open = (l: PickupLocation | "new") => {
     setEditing(l);
@@ -174,7 +190,13 @@ export function LocationsEditor({ locations, campusName, hostelName }: Props) {
             <option value="to_hostel">To {hostelName}</option>
           </Field>
           {editing !== null ? (
-            <LocationPicker lat={num(form.lat)} lng={num(form.lng)} onChange={(lat, lng) => setForm((f) => ({ ...f, lat: String(lat), lng: String(lng) }))} />
+            <LocationPicker
+              lat={num(form.lat)}
+              lng={num(form.lng)}
+              onChange={(lat, lng) => setForm((f) => ({ ...f, lat: String(lat), lng: String(lng) }))}
+              label={form.name.trim() || (editing === "new" ? "New pickup point" : editing.name)}
+              places={places}
+            />
           ) : null}
           <div className="k-grid-2">
             <Field label="Latitude" type="number" inputMode="decimal" step="any" value={form.lat} onChange={(e) => setForm({ ...form, lat: e.target.value })} error={errors.lat} placeholder="6.6760" />

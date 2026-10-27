@@ -2,16 +2,17 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Button, Caption, Card, Field, List, Row, Sheet, Skeleton, Switch, useToast } from "@/components/ui";
 import { api, ApiClientError, errorMessage } from "@/lib/api-client";
-import type { Settings } from "@/lib/db.types";
+import type { PickupLocation, Settings } from "@/lib/db.types";
 import { formatFare } from "@/lib/time";
+import type { PickerPlace } from "./LocationPicker";
 
 const LocationPicker = dynamic(() => import("./LocationPicker"), { ssr: false, loading: () => <Skeleton lines={1} height={220} widths={["100%"]} /> });
 
 type Driver = { id: string; full_name: string; role: string };
-type Props = { settings: Settings; drivers: Driver[] };
+type Props = { settings: Settings; drivers: Driver[]; locations: PickupLocation[] };
 
 /** The two map destinations the road route is drawn towards. */
 type Place = "hostel" | "campus";
@@ -101,7 +102,7 @@ function randomCode(): string {
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
 }
 
-export function SettingsForm({ settings, drivers }: Props) {
+export function SettingsForm({ settings, drivers, locations }: Props) {
   const router = useRouter();
   const { toast } = useToast();
   const [form, setForm] = useState<Form>(() => toForm(settings));
@@ -113,6 +114,19 @@ export function SettingsForm({ settings, drivers }: Props) {
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   const farePesewas = Math.round(Number(form.fare_cedis || 0) * 100);
+
+  // The picker map shows every pickup point students can choose plus the other destination, each with its name.
+  const otherPlace: Place | null = picking === "hostel" ? "campus" : picking === "campus" ? "hostel" : null;
+  const otherLat = otherPlace ? coordNum(form[PLACE_KEYS[otherPlace][0]]) : null;
+  const otherLng = otherPlace ? coordNum(form[PLACE_KEYS[otherPlace][1]]) : null;
+  const otherName = otherPlace === "hostel" ? form.hostel_name || "Hostel" : otherPlace === "campus" ? form.campus_name || "Campus" : "";
+  const pickerPlaces = useMemo<PickerPlace[]>(
+    () => [
+      ...locations.filter((l) => l.is_active).map((l): PickerPlace => ({ id: l.id, name: l.name, lat: l.lat, lng: l.lng, kind: "pickup" })),
+      ...(otherLat != null && otherLng != null ? [{ name: otherName, lat: otherLat, lng: otherLng, kind: "destination" as const }] : []),
+    ],
+    [locations, otherLat, otherLng, otherName],
+  );
 
   const openPicker = (place: Place) => {
     const [latKey, lngKey] = PLACE_KEYS[place];
@@ -304,7 +318,7 @@ export function SettingsForm({ settings, drivers }: Props) {
             Used to draw the shuttle&apos;s road route.
           </span>
           {picking !== null ? (
-            <LocationPicker lat={coordNum(draft.lat)} lng={coordNum(draft.lng)} onChange={(lat, lng) => setDraft({ lat: String(lat), lng: String(lng) })} />
+            <LocationPicker lat={coordNum(draft.lat)} lng={coordNum(draft.lng)} onChange={(lat, lng) => setDraft({ lat: String(lat), lng: String(lng) })} label={placeName(picking)} places={pickerPlaces} />
           ) : null}
           <div className="k-grid-2">
             <Field label="Latitude" type="number" inputMode="decimal" step="any" value={draft.lat} onChange={(e) => setDraft((d) => ({ ...d, lat: e.target.value }))} placeholder="6.6760" />
